@@ -1,0 +1,1917 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="950" onload="init(evt)" viewBox="0 0 1200 950" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="950.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="933" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="933" > </text>
+<g id="frames">
+<g >
+<title>[kubelet] (6,995,186,256 samples, 0.04%)</title><rect x="1185.7" y="869" width="0.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.71" y="879.5" ></text>
+</g>
+<g >
+<title>rocksdb::Status::operator= (204,333,897,423 samples, 1.31%)</title><rect x="643.7" y="773" width="15.5" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="646.70" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,628,220,195 samples, 0.01%)</title><rect x="14.0" y="789" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.98" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,325,836,088 samples, 0.01%)</title><rect x="13.3" y="805" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.29" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,979,756,309 samples, 0.01%)</title><rect x="13.3" y="709" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.31" y="719.5" ></text>
+</g>
+<g >
+<title>start_thread (15,415,069,911,521 samples, 99.08%)</title><rect x="16.2" y="869" width="1169.1" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="19.16" y="879.5" >start_thread</text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (7,606,162,270 samples, 0.05%)</title><rect x="1188.6" y="741" width="0.6" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1191.58" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,338,618,795 samples, 0.01%)</title><rect x="14.0" y="693" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.99" y="703.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,646,239,349 samples, 0.01%)</title><rect x="14.0" y="837" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.97" y="847.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::CompareAndSwap (952,774,200,553 samples, 6.12%)</title><rect x="507.3" y="741" width="72.3" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="510.32" y="751.5" >rocksdb:..</text>
+</g>
+<g >
+<title>[unknown] (1,643,226,044 samples, 0.01%)</title><rect x="1186.9" y="277" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="287.5" ></text>
+</g>
+<g >
+<title>TLS init function for rocksdb::perf_context (219,124,088,525 samples, 1.41%)</title><rect x="153.7" y="789" width="16.7" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="156.74" y="799.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::Swap (9,146,034,470 samples, 0.06%)</title><rect x="660.4" y="773" width="0.7" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="663.37" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,383,998,793 samples, 0.01%)</title><rect x="10.6" y="789" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.58" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,382,339,918 samples, 0.01%)</title><rect x="11.6" y="773" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.56" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,738,335,124 samples, 0.01%)</title><rect x="13.3" y="693" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.32" y="703.5" ></text>
+</g>
+<g >
+<title>[kubelet] (2,804,788,407 samples, 0.02%)</title><rect x="1185.9" y="597" width="0.3" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.94" y="607.5" ></text>
+</g>
+<g >
+<title>__isoc99_sscanf (1,626,012,411 samples, 0.01%)</title><rect x="1187.5" y="853" width="0.1" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1190.45" y="863.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,120,379,073 samples, 0.01%)</title><rect x="14.3" y="597" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.31" y="607.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,049,238,610 samples, 0.01%)</title><rect x="1186.9" y="597" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="607.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,524,798,005 samples, 0.01%)</title><rect x="13.6" y="773" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.64" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="373" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="383.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,049,518,119 samples, 0.01%)</title><rect x="1186.9" y="613" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="623.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,443,941,144 samples, 0.02%)</title><rect x="14.2" y="773" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.22" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,673,527,230 samples, 0.01%)</title><rect x="13.8" y="741" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.77" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,646,239,349 samples, 0.01%)</title><rect x="14.0" y="821" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.97" y="831.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,420,289,929 samples, 0.01%)</title><rect x="11.6" y="837" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.56" y="847.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,194,334,072 samples, 0.01%)</title><rect x="14.3" y="645" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.31" y="655.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,327,133,262 samples, 0.01%)</title><rect x="13.3" y="869" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.29" y="879.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,477,101,618 samples, 0.02%)</title><rect x="14.2" y="789" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.22" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,098,222,748 samples, 0.01%)</title><rect x="13.0" y="661" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.95" y="671.5" ></text>
+</g>
+<g >
+<title>sched_ttwu_pending (1,526,197,376 samples, 0.01%)</title><rect x="1189.3" y="773" width="0.1" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="1192.33" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::PosixClock::NowMicros (262,021,061,094 samples, 1.68%)</title><rect x="1043.6" y="789" width="19.9" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1046.65" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,527,695,355 samples, 0.01%)</title><rect x="13.6" y="789" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.64" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,534,168,731 samples, 0.01%)</title><rect x="13.6" y="837" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.64" y="847.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::CompareAndSwap (21,719,896,552 samples, 0.14%)</title><rect x="584.7" y="757" width="1.6" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="587.67" y="767.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::ReturnThreadLocalSuperVersion (29,192,351,554 samples, 0.19%)</title><rect x="460.6" y="773" width="2.2" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="463.61" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,431,182,685 samples, 0.01%)</title><rect x="14.9" y="837" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="847.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,533,903,513 samples, 0.02%)</title><rect x="14.2" y="837" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.21" y="847.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,452,391,132 samples, 0.01%)</title><rect x="14.0" y="741" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.99" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,420,289,929 samples, 0.01%)</title><rect x="11.6" y="789" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.56" y="799.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (33,604,961,254 samples, 0.22%)</title><rect x="367.1" y="773" width="2.5" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="370.10" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="389" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="399.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,643,226,044 samples, 0.01%)</title><rect x="1186.9" y="261" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="271.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,711,950,735 samples, 0.03%)</title><rect x="1185.8" y="725" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.82" y="735.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,420,289,929 samples, 0.01%)</title><rect x="11.6" y="821" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.56" y="831.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::operator (124,720,874,780 samples, 0.80%)</title><rect x="1131.4" y="805" width="9.5" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1134.43" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,035,597,303 samples, 0.01%)</title><rect x="1186.9" y="533" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="543.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,770,139,977 samples, 0.02%)</title><rect x="14.3" y="693" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.27" y="703.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::_M_gen_rand (156,872,077,451 samples, 1.01%)</title><rect x="1119.5" y="805" width="11.9" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1122.53" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,532,099,547 samples, 0.01%)</title><rect x="13.6" y="821" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.64" y="831.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,533,555,711 samples, 0.02%)</title><rect x="14.2" y="821" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.21" y="831.5" ></text>
+</g>
+<g >
+<title>db_bench (15,416,179,359,413 samples, 99.09%)</title><rect x="16.1" y="885" width="1169.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="19.08" y="895.5" >db_bench</text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="165" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="175.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::Get (31,939,628,150 samples, 0.21%)</title><rect x="1144.1" y="821" width="2.4" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="1147.12" y="831.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,598,038,209 samples, 0.01%)</title><rect x="13.8" y="709" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.77" y="719.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,610,291,208 samples, 0.01%)</title><rect x="14.0" y="773" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.98" y="783.5" ></text>
+</g>
+<g >
+<title>[kubelet] (6,767,352,548 samples, 0.04%)</title><rect x="1185.7" y="805" width="0.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.72" y="815.5" ></text>
+</g>
+<g >
+<title>flush_smp_call_function_queue (1,555,463,089 samples, 0.01%)</title><rect x="1189.3" y="805" width="0.1" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1192.33" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,327,133,262 samples, 0.01%)</title><rect x="13.3" y="837" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.29" y="847.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,700,038,042 samples, 0.01%)</title><rect x="1186.9" y="309" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="319.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,420,289,929 samples, 0.01%)</title><rect x="11.6" y="869" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.56" y="879.5" ></text>
+</g>
+<g >
+<title>rocksdb::Stats::FinishedOps (58,174,234,272 samples, 0.37%)</title><rect x="1146.5" y="821" width="4.5" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1149.54" y="831.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,338,610,452 samples, 0.01%)</title><rect x="11.6" y="741" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.57" y="751.5" ></text>
+</g>
+<g >
+<title>:1048289 (1,809,101,725 samples, 0.01%)</title><rect x="13.8" y="885" width="0.1" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="16.76" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,645,455,451 samples, 0.01%)</title><rect x="14.0" y="805" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.97" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,055,964,884 samples, 0.01%)</title><rect x="1186.9" y="789" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,534,168,731 samples, 0.01%)</title><rect x="13.6" y="869" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.64" y="879.5" ></text>
+</g>
+<g >
+<title>wake_up_process (3,874,698,699 samples, 0.02%)</title><rect x="1188.6" y="661" width="0.3" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1191.61" y="671.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,533,903,513 samples, 0.02%)</title><rect x="14.2" y="869" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.21" y="879.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,290,781,921 samples, 0.01%)</title><rect x="13.3" y="789" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.29" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,431,387,547 samples, 0.01%)</title><rect x="14.9" y="869" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="879.5" ></text>
+</g>
+<g >
+<title>do_filp_open (2,000,895,063 samples, 0.01%)</title><rect x="1187.2" y="773" width="0.2" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1190.24" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,834,512,356 samples, 0.01%)</title><rect x="1186.9" y="469" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.91" y="479.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,327,133,262 samples, 0.01%)</title><rect x="13.3" y="821" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.29" y="831.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (1,325,912,551 samples, 0.01%)</title><rect x="1189.0" y="645" width="0.1" height="15.0" fill="rgb(240,163,38)" rx="2" ry="2" />
+<text  x="1192.00" y="655.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,167,531,862 samples, 0.01%)</title><rect x="14.3" y="629" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.31" y="639.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::Get (79,120,643,931 samples, 0.51%)</title><rect x="873.5" y="789" width="6.0" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="876.51" y="799.5" ></text>
+</g>
+<g >
+<title>swapper (16,670,228,464 samples, 0.11%)</title><rect x="1188.5" y="885" width="1.3" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1191.54" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,774,427,414 samples, 0.02%)</title><rect x="12.9" y="741" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.91" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,384,677,361 samples, 0.01%)</title><rect x="10.6" y="805" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.58" y="815.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (4,976,082,104 samples, 0.03%)</title><rect x="1188.6" y="725" width="0.4" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1191.58" y="735.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="421" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="431.5" ></text>
+</g>
+<g >
+<title>rocksdb::HistogramStat::Add (3,598,694,599 samples, 0.02%)</title><rect x="929.5" y="805" width="0.2" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="932.46" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,956,166,836 samples, 0.01%)</title><rect x="14.3" y="565" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.32" y="575.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,420,289,929 samples, 0.01%)</title><rect x="11.6" y="805" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.56" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,531,387,268 samples, 0.02%)</title><rect x="14.2" y="805" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.21" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (8,675,186,463 samples, 0.06%)</title><rect x="1187.1" y="869" width="0.7" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1190.10" y="879.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,834,512,356 samples, 0.01%)</title><rect x="1186.9" y="453" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.91" y="463.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Swap (30,059,749,894 samples, 0.19%)</title><rect x="661.1" y="773" width="2.2" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="664.06" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="341" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="351.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,529,572,428 samples, 0.01%)</title><rect x="13.6" y="805" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.64" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,646,738,814 samples, 0.01%)</title><rect x="14.0" y="869" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.97" y="879.5" ></text>
+</g>
+<g >
+<title>rocksdb::Random::GetTLSInstance (31,899,961,697 samples, 0.21%)</title><rect x="857.0" y="741" width="2.4" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="859.97" y="751.5" ></text>
+</g>
+<g >
+<title>enqueue_task (1,461,763,676 samples, 0.01%)</title><rect x="1189.3" y="741" width="0.1" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1192.33" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,023,967,068 samples, 0.01%)</title><rect x="13.3" y="725" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.31" y="735.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,084,629,554 samples, 0.01%)</title><rect x="13.3" y="773" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.31" y="783.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (3,866,059,573 samples, 0.02%)</title><rect x="1188.6" y="645" width="0.3" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="1191.61" y="655.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,055,964,884 samples, 0.01%)</title><rect x="1186.9" y="773" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::GetComparator (35,861,212,942 samples, 0.23%)</title><rect x="462.8" y="773" width="2.7" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="465.83" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::Version::Get (96,958,651,763 samples, 0.62%)</title><rect x="914.3" y="789" width="7.3" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="917.26" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,170,526,343 samples, 0.02%)</title><rect x="14.2" y="757" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.24" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,131,621,128 samples, 0.01%)</title><rect x="14.3" y="613" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.31" y="623.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,005,873 samples, 0.01%)</title><rect x="14.3" y="85" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="95.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (7,608,910,801 samples, 0.05%)</title><rect x="1188.6" y="757" width="0.6" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="1191.58" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,005,873 samples, 0.01%)</title><rect x="14.3" y="37" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="47.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,576,981,102 samples, 0.01%)</title><rect x="1186.9" y="229" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.93" y="239.5" ></text>
+</g>
+<g >
+<title>path_openat (2,000,895,063 samples, 0.01%)</title><rect x="1187.2" y="757" width="0.2" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="1190.24" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,716,753,525 samples, 0.02%)</title><rect x="12.9" y="709" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="719.5" ></text>
+</g>
+<g >
+<title>secondary_startup_64_no_verify (16,509,858,213 samples, 0.11%)</title><rect x="1188.5" y="869" width="1.3" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="1191.55" y="879.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,438,876,878 samples, 0.01%)</title><rect x="1186.9" y="149" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.94" y="159.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="213" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="223.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,855,450,978 samples, 0.02%)</title><rect x="14.3" y="709" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.26" y="719.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,365,096,719 samples, 0.01%)</title><rect x="14.9" y="741" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,048,873,813 samples, 0.01%)</title><rect x="1186.9" y="549" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="559.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,701,354,021 samples, 0.01%)</title><rect x="1186.9" y="357" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="367.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,049,997,996 samples, 0.01%)</title><rect x="1186.9" y="629" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="639.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (54,349,929,525 samples, 0.35%)</title><rect x="20.7" y="821" width="4.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="23.74" y="831.5" ></text>
+</g>
+<g >
+<title>all (15,558,419,480,556 samples, 100%)</title><rect x="10.0" y="901" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,033,436,580 samples, 0.01%)</title><rect x="1186.9" y="501" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="511.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,050,408,985 samples, 0.01%)</title><rect x="1186.9" y="677" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="687.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,040,751,447 samples, 0.01%)</title><rect x="13.3" y="757" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.31" y="767.5" ></text>
+</g>
+<g >
+<title>enqueue_entity (1,373,183,323 samples, 0.01%)</title><rect x="1188.6" y="581" width="0.1" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="1191.64" y="591.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Swap (48,101,097,024 samples, 0.31%)</title><rect x="457.0" y="757" width="3.6" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="459.96" y="767.5" ></text>
+</g>
+<g >
+<title>rocksdb::ReadOptions::ReadOptions (353,912,098,396 samples, 2.27%)</title><rect x="886.7" y="789" width="26.9" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="889.74" y="799.5" >r..</text>
+</g>
+<g >
+<title>std::_Function_base::~_Function_base (78,633,365,865 samples, 0.51%)</title><rect x="859.9" y="773" width="6.0" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="862.90" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::Random::GetTLSInstance (6,724,729,178 samples, 0.04%)</title><rect x="859.4" y="757" width="0.5" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="862.39" y="767.5" ></text>
+</g>
+<g >
+<title>cpuidle_idle_call (10,112,062,468 samples, 0.06%)</title><rect x="1188.6" y="805" width="0.7" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="1191.56" y="815.5" ></text>
+</g>
+<g >
+<title>bash (3,269,779,124 samples, 0.02%)</title><rect x="15.8" y="885" width="0.3" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="18.81" y="895.5" ></text>
+</g>
+<g >
+<title>ttwu_do_activate (3,619,512,692 samples, 0.02%)</title><rect x="1188.6" y="629" width="0.3" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1191.62" y="639.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (4,958,749,469 samples, 0.03%)</title><rect x="1188.6" y="709" width="0.4" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="1191.58" y="719.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::FailIfCfHasTs (381,425,868,589 samples, 2.45%)</title><rect x="465.6" y="773" width="28.9" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="468.56" y="783.5" >ro..</text>
+</g>
+<g >
+<title>[unknown] (1,646,738,814 samples, 0.01%)</title><rect x="14.0" y="853" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.97" y="863.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::GetFromList (71,461,629,312 samples, 0.46%)</title><rect x="637.9" y="773" width="5.4" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="640.92" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="229" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::GetImpl (8,903,932,242,405 samples, 57.23%)</title><rect x="192.0" y="789" width="675.3" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="194.98" y="799.5" >rocksdb::DBImpl::GetImpl</text>
+</g>
+<g >
+<title>[unknown] (2,050,877,149 samples, 0.01%)</title><rect x="1186.9" y="693" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="703.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (261,885,964,036 samples, 1.68%)</title><rect x="1043.7" y="773" width="19.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1046.66" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,334,803,496 samples, 0.01%)</title><rect x="13.7" y="741" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.66" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,365,175,660 samples, 0.02%)</title><rect x="1186.3" y="869" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.31" y="879.5" ></text>
+</g>
+<g >
+<title>:1048305 (1,646,738,814 samples, 0.01%)</title><rect x="14.0" y="885" width="0.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="16.97" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="325" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="335.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,420,289,929 samples, 0.01%)</title><rect x="11.6" y="853" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.56" y="863.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,769,540,028 samples, 0.02%)</title><rect x="12.9" y="725" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.91" y="735.5" ></text>
+</g>
+<g >
+<title>start_secondary (16,507,123,845 samples, 0.11%)</title><rect x="1188.5" y="853" width="1.3" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1191.55" y="863.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,035,597,303 samples, 0.01%)</title><rect x="1186.9" y="517" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="527.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,612,661,280 samples, 0.02%)</title><rect x="14.3" y="661" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.27" y="671.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;rocksdb::OperationType, std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt;, std::allocator&lt;std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;rocksdb::OperationType&gt;, std::hash&lt;unsigned char&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt;, true&gt;::operator[] (55,689,357,075 samples, 0.36%)</title><rect x="1076.5" y="789" width="4.2" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1079.49" y="799.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::GetThreadLocal (62,018,503,795 samples, 0.40%)</title><rect x="382.4" y="757" width="4.7" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="385.40" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,755,762,835 samples, 0.01%)</title><rect x="14.3" y="517" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="527.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,534,168,731 samples, 0.01%)</title><rect x="13.6" y="853" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.64" y="863.5" ></text>
+</g>
+<g >
+<title>[kubelet] (6,995,186,256 samples, 0.04%)</title><rect x="1185.7" y="837" width="0.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.71" y="847.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::CompareAndSwap (30,009,499,980 samples, 0.19%)</title><rect x="582.4" y="757" width="2.3" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="585.40" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,431,387,547 samples, 0.01%)</title><rect x="14.9" y="853" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="863.5" ></text>
+</g>
+<g >
+<title>rocksdb::Version::Get (2,591,636,556,633 samples, 16.66%)</title><rect x="663.3" y="773" width="196.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="666.34" y="783.5" >rocksdb::Version::Get</text>
+</g>
+<g >
+<title>[unknown] (3,533,903,513 samples, 0.02%)</title><rect x="14.2" y="853" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.21" y="863.5" ></text>
+</g>
+<g >
+<title>:1048310 (3,533,903,513 samples, 0.02%)</title><rect x="14.2" y="885" width="0.3" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="17.21" y="895.5" ></text>
+</g>
+<g >
+<title>__x64_sys_read (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="821" width="0.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1190.99" y="831.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="837" width="0.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1190.99" y="847.5" ></text>
+</g>
+<g >
+<title>cpuidle_enter (8,579,454,044 samples, 0.06%)</title><rect x="1188.6" y="789" width="0.6" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1191.57" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,475,872,805 samples, 0.01%)</title><rect x="13.8" y="677" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.78" y="687.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,575,192,785 samples, 0.01%)</title><rect x="1186.9" y="213" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.93" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::FailIfCfHasTs (89,711,523,562 samples, 0.58%)</title><rect x="185.2" y="789" width="6.8" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="188.18" y="799.5" ></text>
+</g>
+<g >
+<title>:1048275 (2,327,133,262 samples, 0.01%)</title><rect x="13.3" y="885" width="0.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="16.29" y="895.5" ></text>
+</g>
+<g >
+<title>rocksdb::GetContext::GetContext (1,138,647,503,467 samples, 7.32%)</title><rect x="773.0" y="757" width="86.4" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="776.03" y="767.5" >rocksdb::G..</text>
+</g>
+<g >
+<title>[unknown] (2,327,133,262 samples, 0.01%)</title><rect x="13.3" y="853" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.29" y="863.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,575,192,785 samples, 0.01%)</title><rect x="1186.9" y="181" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.93" y="191.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (2,332,184,961 samples, 0.01%)</title><rect x="1187.2" y="837" width="0.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1190.24" y="847.5" ></text>
+</g>
+<g >
+<title>cpu_startup_entry (16,506,343,688 samples, 0.11%)</title><rect x="1188.5" y="837" width="1.3" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1191.55" y="847.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,523,671,248 samples, 0.01%)</title><rect x="14.0" y="757" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.98" y="767.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::GetImpl (70,961,516,290 samples, 0.46%)</title><rect x="921.6" y="805" width="5.4" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="924.61" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,829,805,892 samples, 0.01%)</title><rect x="1186.9" y="421" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.91" y="431.5" ></text>
+</g>
+<g >
+<title>psi_task_change (1,565,567,121 samples, 0.01%)</title><rect x="1188.8" y="597" width="0.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1191.77" y="607.5" ></text>
+</g>
+<g >
+<title>:1048287 (1,534,168,731 samples, 0.01%)</title><rect x="13.6" y="885" width="0.2" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="16.64" y="895.5" ></text>
+</g>
+<g >
+<title>cpuidle_enter_state (8,511,554,963 samples, 0.05%)</title><rect x="1188.6" y="773" width="0.6" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="1191.57" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::Benchmark::ThreadBody (15,415,069,911,521 samples, 99.08%)</title><rect x="16.2" y="837" width="1169.1" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="19.16" y="847.5" >rocksdb::Benchmark::ThreadBody</text>
+</g>
+<g >
+<title>[unknown] (1,438,477,646 samples, 0.01%)</title><rect x="1186.9" y="133" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.94" y="143.5" ></text>
+</g>
+<g >
+<title>vfs_read (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="789" width="0.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="1190.99" y="799.5" ></text>
+</g>
+<g >
+<title>rocksdb::Benchmark::ReadRandom (14,714,898,043,472 samples, 94.58%)</title><rect x="24.9" y="821" width="1116.0" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="27.87" y="831.5" >rocksdb::Benchmark::ReadRandom</text>
+</g>
+<g >
+<title>[unknown] (2,048,873,813 samples, 0.01%)</title><rect x="1186.9" y="565" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="575.5" ></text>
+</g>
+<g >
+<title>__schedule (4,212,809,068 samples, 0.03%)</title><rect x="1189.5" y="789" width="0.3" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="1192.45" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,925,124,570 samples, 0.03%)</title><rect x="1186.8" y="869" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.75" y="879.5" ></text>
+</g>
+<g >
+<title>[kubelet] (3,668,526,775 samples, 0.02%)</title><rect x="1185.9" y="629" width="0.3" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.89" y="639.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::Get (48,413,614,185 samples, 0.31%)</title><rect x="869.8" y="789" width="3.7" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="872.83" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,705,102,895 samples, 0.01%)</title><rect x="13.3" y="677" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.32" y="687.5" ></text>
+</g>
+<g >
+<title>ps (15,810,237,927 samples, 0.10%)</title><rect x="1187.1" y="885" width="1.2" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1190.06" y="895.5" ></text>
+</g>
+<g >
+<title>ls (5,810,716,983 samples, 0.04%)</title><rect x="1186.3" y="885" width="0.4" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="1189.31" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="261" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,005,873 samples, 0.01%)</title><rect x="14.3" y="117" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="127.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,055,964,884 samples, 0.01%)</title><rect x="1186.9" y="805" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,344,422,099 samples, 0.01%)</title><rect x="11.6" y="757" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="14.57" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,643,498,030 samples, 0.01%)</title><rect x="1186.9" y="293" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,634,210,951 samples, 0.01%)</title><rect x="13.3" y="661" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.32" y="671.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,893,467,569 samples, 0.02%)</title><rect x="14.3" y="725" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.26" y="735.5" ></text>
+</g>
+<g >
+<title>[kubelet] (3,463,423,689 samples, 0.02%)</title><rect x="1185.9" y="613" width="0.3" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.89" y="623.5" ></text>
+</g>
+<g >
+<title>[kubelet] (1,617,332,222 samples, 0.01%)</title><rect x="1186.0" y="565" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1189.03" y="575.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,358,720,355 samples, 0.01%)</title><rect x="13.7" y="757" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.66" y="767.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,767,598,956 samples, 0.03%)</title><rect x="1185.8" y="757" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.82" y="767.5" ></text>
+</g>
+<g >
+<title>[kubelet] (1,513,277,047 samples, 0.01%)</title><rect x="1186.0" y="549" width="0.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1189.03" y="559.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="181" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="191.5" ></text>
+</g>
+<g >
+<title>ttwu_do_activate (1,470,576,665 samples, 0.01%)</title><rect x="1189.3" y="757" width="0.1" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1192.33" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,466,894,400 samples, 0.01%)</title><rect x="13.8" y="661" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.78" y="671.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Instance (34,068,853,077 samples, 0.22%)</title><rect x="504.7" y="741" width="2.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="507.74" y="751.5" ></text>
+</g>
+<g >
+<title>[kubelet] (6,241,424,963 samples, 0.04%)</title><rect x="1185.8" y="789" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.75" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,339,107,922 samples, 0.01%)</title><rect x="14.9" y="725" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="735.5" ></text>
+</g>
+<g >
+<title>[kubelet] (3,782,582,589 samples, 0.02%)</title><rect x="1185.9" y="645" width="0.3" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.88" y="655.5" ></text>
+</g>
+<g >
+<title>proc_single_show (3,076,112,247 samples, 0.02%)</title><rect x="1188.0" y="741" width="0.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1191.03" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,385,564,557 samples, 0.01%)</title><rect x="10.6" y="869" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.58" y="879.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,575,192,785 samples, 0.01%)</title><rect x="1186.9" y="197" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.93" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,379,820,510 samples, 0.01%)</title><rect x="14.9" y="773" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,055,964,884 samples, 0.01%)</title><rect x="1186.9" y="821" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="831.5" ></text>
+</g>
+<g >
+<title>kubelet (7,452,422,388 samples, 0.05%)</title><rect x="1185.7" y="885" width="0.6" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1188.71" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,589,052,819 samples, 0.01%)</title><rect x="1186.9" y="245" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.93" y="255.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (4,518,278,434 samples, 0.03%)</title><rect x="1188.6" y="693" width="0.3" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="1191.58" y="703.5" ></text>
+</g>
+<g >
+<title>iptables (1,889,781,888 samples, 0.01%)</title><rect x="1185.5" y="885" width="0.1" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1188.46" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,700,038,042 samples, 0.01%)</title><rect x="1186.9" y="341" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="351.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="277" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="287.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::GetThreadLocal (37,129,875,390 samples, 0.24%)</title><rect x="579.6" y="741" width="2.8" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="582.58" y="751.5" ></text>
+</g>
+<g >
+<title>:1048264 (2,976,777,715 samples, 0.02%)</title><rect x="12.9" y="885" width="0.2" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="15.90" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,715,529,050 samples, 0.02%)</title><rect x="14.3" y="677" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.27" y="687.5" ></text>
+</g>
+<g >
+<title>pick_next_task_fair (2,456,175,623 samples, 0.02%)</title><rect x="1189.5" y="757" width="0.2" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1192.47" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,895,449,030 samples, 0.02%)</title><rect x="14.3" y="741" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.26" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,831,270,312 samples, 0.01%)</title><rect x="1186.9" y="437" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.91" y="447.5" ></text>
+</g>
+<g >
+<title>rocksdb::HistogramImpl::Add (32,454,723,063 samples, 0.21%)</title><rect x="927.0" y="805" width="2.5" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="929.99" y="815.5" ></text>
+</g>
+<g >
+<title>rocksdb::Cleanable::Cleanable (80,375,969,521 samples, 0.52%)</title><rect x="170.4" y="789" width="6.1" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="173.37" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="245" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="255.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,567,950,054 samples, 0.03%)</title><rect x="1185.8" y="709" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.83" y="719.5" ></text>
+</g>
+<g >
+<title>[db_bench] (47,386,197,683 samples, 0.30%)</title><rect x="363.5" y="773" width="3.6" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="366.51" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,809,101,725 samples, 0.01%)</title><rect x="13.8" y="853" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.76" y="863.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,801,881,909 samples, 0.01%)</title><rect x="1186.9" y="405" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.91" y="415.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,431,066,137 samples, 0.01%)</title><rect x="14.9" y="821" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="831.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;rocksdb::OperationType, std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt;, std::allocator&lt;std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;rocksdb::OperationType&gt;, std::hash&lt;unsigned char&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt;, true&gt;::operator[] (46,008,596,992 samples, 0.30%)</title><rect x="1116.0" y="805" width="3.5" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1119.04" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,784,729,823 samples, 0.02%)</title><rect x="12.9" y="757" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.91" y="767.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (2,400,489,834 samples, 0.02%)</title><rect x="1189.0" y="725" width="0.1" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1191.96" y="735.5" ></text>
+</g>
+<g >
+<title>rocksdb::StopWatch::~StopWatch (15,423,938,836 samples, 0.10%)</title><rect x="659.2" y="773" width="1.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="662.20" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,386,778,885 samples, 0.01%)</title><rect x="14.9" y="789" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="799.5" ></text>
+</g>
+<g >
+<title>seq_read (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="773" width="0.3" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1190.99" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::Stats::FinishedOps (1,846,700,042,142 samples, 11.87%)</title><rect x="940.7" y="805" width="140.0" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="943.66" y="815.5" >rocksdb::Stats::F..</text>
+</g>
+<g >
+<title>rocksdb::DBImpl::ReturnAndCleanupSuperVersion (1,210,875,789,363 samples, 7.78%)</title><rect x="494.5" y="773" width="91.8" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="497.48" y="783.5" >rocksdb::D..</text>
+</g>
+<g >
+<title>ksys_read (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="805" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1190.99" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,052,318,732 samples, 0.01%)</title><rect x="1186.9" y="757" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,049,997,996 samples, 0.01%)</title><rect x="1186.9" y="645" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="655.5" ></text>
+</g>
+<g >
+<title>rocksdb::MergeContext::~MergeContext (4,700,535,952 samples, 0.03%)</title><rect x="643.3" y="773" width="0.4" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="646.34" y="783.5" ></text>
+</g>
+<g >
+<title>[kubelet] (6,956,623,311 samples, 0.04%)</title><rect x="1185.7" y="821" width="0.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.71" y="831.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::FilePicker::GetNextFile (12,602,966,760 samples, 0.08%)</title><rect x="369.7" y="773" width="0.9" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="372.68" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,374,240,337 samples, 0.01%)</title><rect x="14.9" y="757" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="767.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (2,332,184,961 samples, 0.01%)</title><rect x="1187.2" y="821" width="0.2" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1190.24" y="831.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,329,762,785 samples, 0.01%)</title><rect x="13.7" y="725" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.66" y="735.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::Get (381,193,979,488 samples, 2.45%)</title><rect x="609.0" y="773" width="28.9" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="612.01" y="783.5" >ro..</text>
+</g>
+<g >
+<title>:1050461 (1,431,387,547 samples, 0.01%)</title><rect x="14.9" y="885" width="0.1" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="17.91" y="895.5" ></text>
+</g>
+<g >
+<title>__GI___libc_open (2,332,184,961 samples, 0.01%)</title><rect x="1187.2" y="853" width="0.2" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="1190.24" y="863.5" ></text>
+</g>
+<g >
+<title>_nohz_idle_balance.isra.0 (1,701,317,068 samples, 0.01%)</title><rect x="1189.0" y="661" width="0.1" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="1191.97" y="671.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,513,426,569 samples, 0.01%)</title><rect x="13.8" y="693" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.78" y="703.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,049,997,996 samples, 0.01%)</title><rect x="1186.9" y="661" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="671.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,059,559,166 samples, 0.01%)</title><rect x="1186.9" y="837" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="847.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,827,587,396 samples, 0.03%)</title><rect x="1185.8" y="773" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.81" y="783.5" ></text>
+</g>
+<g >
+<title>psi_task_switch (1,464,585,297 samples, 0.01%)</title><rect x="1189.7" y="773" width="0.1" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="1192.66" y="783.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,424,992,644 samples, 0.03%)</title><rect x="1185.8" y="693" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.84" y="703.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::DefaultColumnFamily (42,581,112,453 samples, 0.27%)</title><rect x="1140.9" y="821" width="3.2" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1143.89" y="831.5" ></text>
+</g>
+<g >
+<title>node (3,925,124,570 samples, 0.03%)</title><rect x="1186.8" y="885" width="0.2" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1189.75" y="895.5" ></text>
+</g>
+<g >
+<title>rocksdb::StopWatch::~StopWatch (8,788,396,765 samples, 0.06%)</title><rect x="913.6" y="789" width="0.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="916.59" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="133" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="143.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="309" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="319.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,051,504,737 samples, 0.01%)</title><rect x="1186.9" y="725" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="735.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,385,564,557 samples, 0.01%)</title><rect x="10.6" y="837" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.58" y="847.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::operator (452,687,427,690 samples, 2.91%)</title><rect x="1151.0" y="821" width="34.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1153.96" y="831.5" >st..</text>
+</g>
+<g >
+<title>__x64_sys_openat (2,332,184,961 samples, 0.01%)</title><rect x="1187.2" y="805" width="0.2" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="1190.24" y="815.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,976,777,715 samples, 0.02%)</title><rect x="12.9" y="853" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.90" y="863.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,731,825,020 samples, 0.01%)</title><rect x="14.3" y="485" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="495.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::cfd (68,070,460,866 samples, 0.44%)</title><rect x="489.3" y="757" width="5.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="492.32" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,699,145,261 samples, 0.01%)</title><rect x="13.8" y="757" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.77" y="767.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_dispose (18,751,512,677 samples, 0.12%)</title><rect x="865.9" y="773" width="1.4" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="868.86" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,416,610,482 samples, 0.01%)</title><rect x="14.0" y="709" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.99" y="719.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,049,238,610 samples, 0.01%)</title><rect x="1186.9" y="581" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="591.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,730,412,275 samples, 0.01%)</title><rect x="14.3" y="469" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="479.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,871,214,408 samples, 0.02%)</title><rect x="1188.3" y="869" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1191.32" y="879.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="357" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="367.5" ></text>
+</g>
+<g >
+<title>grep (1,322,389,923 samples, 0.01%)</title><rect x="1185.3" y="885" width="0.1" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="1188.32" y="895.5" ></text>
+</g>
+<g >
+<title>[db_bench] (60,439,535,959 samples, 0.39%)</title><rect x="16.2" y="821" width="4.5" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="19.16" y="831.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,385,439,725 samples, 0.01%)</title><rect x="10.6" y="821" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.58" y="831.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::ReturnAndCleanupSuperVersion (33,204,835,906 samples, 0.21%)</title><rect x="867.3" y="789" width="2.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="870.32" y="799.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (2,400,012,190 samples, 0.02%)</title><rect x="1189.0" y="709" width="0.1" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1191.96" y="719.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,431,066,137 samples, 0.01%)</title><rect x="14.9" y="805" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.91" y="815.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::Get (233,889,415,065 samples, 1.50%)</title><rect x="591.3" y="773" width="17.7" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="594.27" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::HistogramBucketMapper::IndexForValue (104,710,596,015 samples, 0.67%)</title><rect x="1063.5" y="789" width="8.0" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1066.52" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,024,993,014 samples, 0.01%)</title><rect x="13.3" y="741" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.31" y="751.5" ></text>
+</g>
+<g >
+<title>proc_pid_status (2,368,649,059 samples, 0.02%)</title><rect x="1188.0" y="725" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.03" y="735.5" ></text>
+</g>
+<g >
+<title>set_next_entity (1,436,616,007 samples, 0.01%)</title><rect x="1189.5" y="741" width="0.1" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1192.54" y="751.5" ></text>
+</g>
+<g >
+<title>read (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="869" width="0.3" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="1190.99" y="879.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,118,952,932 samples, 0.01%)</title><rect x="14.3" y="581" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.31" y="591.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,799,748,210 samples, 0.01%)</title><rect x="13.8" y="773" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.76" y="783.5" ></text>
+</g>
+<g >
+<title>enqueue_task_fair (1,846,170,121 samples, 0.01%)</title><rect x="1188.6" y="597" width="0.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1191.63" y="607.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="405" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="415.5" ></text>
+</g>
+<g >
+<title>seq_read_iter (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="757" width="0.3" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="1190.99" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,005,873 samples, 0.01%)</title><rect x="14.3" y="101" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="111.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::CompareAndSwap (72,232,179,921 samples, 0.46%)</title><rect x="499.3" y="741" width="5.4" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="502.26" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,561,643,951 samples, 0.02%)</title><rect x="12.9" y="677" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="687.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,050,877,149 samples, 0.01%)</title><rect x="1186.9" y="709" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="719.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::GetThreadLocalSuperVersion (37,227,936,075 samples, 0.24%)</title><rect x="176.5" y="789" width="2.8" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="179.47" y="799.5" ></text>
+</g>
+<g >
+<title>rocksdb::HistogramStat::Add (66,305,148,241 samples, 0.43%)</title><rect x="1071.5" y="789" width="5.0" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1074.46" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,061,522,180 samples, 0.01%)</title><rect x="1186.9" y="853" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="863.5" ></text>
+</g>
+<g >
+<title>:1047313 (1,385,564,557 samples, 0.01%)</title><rect x="10.6" y="885" width="0.1" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="13.58" y="895.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,976,777,715 samples, 0.02%)</title><rect x="12.9" y="869" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.90" y="879.5" ></text>
+</g>
+<g >
+<title>pick_next_task (2,541,697,217 samples, 0.02%)</title><rect x="1189.5" y="773" width="0.2" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="1192.46" y="783.5" ></text>
+</g>
+<g >
+<title>awk (1,857,092,426 samples, 0.01%)</title><rect x="15.7" y="885" width="0.1" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="18.67" y="895.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Instance (67,091,633,529 samples, 0.43%)</title><rect x="377.3" y="757" width="5.1" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="380.31" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,755,762,835 samples, 0.01%)</title><rect x="14.3" y="501" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="511.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,809,101,725 samples, 0.01%)</title><rect x="13.8" y="821" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.76" y="831.5" ></text>
+</g>
+<g >
+<title>hrtimer_wakeup (3,874,816,123 samples, 0.02%)</title><rect x="1188.6" y="677" width="0.3" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="1191.61" y="687.5" ></text>
+</g>
+<g >
+<title>enqueue_task (3,536,458,864 samples, 0.02%)</title><rect x="1188.6" y="613" width="0.3" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1191.62" y="623.5" ></text>
+</g>
+<g >
+<title>sshd (2,924,434,307 samples, 0.02%)</title><rect x="1188.3" y="885" width="0.2" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1191.31" y="895.5" ></text>
+</g>
+<g >
+<title>run_rebalance_domains (2,128,129,536 samples, 0.01%)</title><rect x="1189.0" y="677" width="0.1" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1191.97" y="687.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::GetComparator (33,213,569,438 samples, 0.21%)</title><rect x="486.8" y="757" width="2.5" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="489.80" y="767.5" ></text>
+</g>
+<g >
+<title>[kubelet] (6,995,186,256 samples, 0.04%)</title><rect x="1185.7" y="853" width="0.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.71" y="863.5" ></text>
+</g>
+<g >
+<title>rocksdb::ReadOptions::ReadOptions (144,090,671,900 samples, 0.93%)</title><rect x="929.7" y="805" width="11.0" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="932.73" y="815.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,723,290,785 samples, 0.03%)</title><rect x="1185.8" y="741" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.82" y="751.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,801,301,394 samples, 0.01%)</title><rect x="13.8" y="789" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.76" y="799.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::cfd (77,646,067,710 samples, 0.50%)</title><rect x="179.3" y="789" width="5.9" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="182.29" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,809,101,725 samples, 0.01%)</title><rect x="13.8" y="837" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.76" y="847.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::Get (10,554,565,606,169 samples, 67.84%)</title><rect x="121.1" y="805" width="800.5" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="124.12" y="815.5" >rocksdb::DBImpl::Get</text>
+</g>
+<g >
+<title>[unknown] (2,051,504,737 samples, 0.01%)</title><rect x="1186.9" y="741" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.89" y="751.5" ></text>
+</g>
+<g >
+<title>:1047831 (1,420,289,929 samples, 0.01%)</title><rect x="11.6" y="885" width="0.1" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="14.56" y="895.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (3,507,100,082 samples, 0.02%)</title><rect x="1188.0" y="853" width="0.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1190.99" y="863.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,186,869,120 samples, 0.03%)</title><rect x="1185.9" y="661" width="0.3" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.85" y="671.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,943,567,678 samples, 0.02%)</title><rect x="12.9" y="805" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.90" y="815.5" ></text>
+</g>
+<g >
+<title>__do_softirq (2,325,756,024 samples, 0.01%)</title><rect x="1189.0" y="693" width="0.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1191.96" y="703.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::FilePicker::GetNextFile (140,976,777,782 samples, 0.91%)</title><rect x="760.4" y="757" width="10.7" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="763.37" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,005,873 samples, 0.01%)</title><rect x="14.3" y="69" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="79.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,434,039,920 samples, 0.01%)</title><rect x="14.0" y="725" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.99" y="735.5" ></text>
+</g>
+<g >
+<title>rocksdb::GetContext::GetContext (50,162,754,176 samples, 0.32%)</title><rect x="586.5" y="773" width="3.8" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="589.46" y="783.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;rocksdb::OperationType, std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt;, std::allocator&lt;std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;rocksdb::OperationType&gt;, std::hash&lt;unsigned char&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::find (465,811,994,377 samples, 2.99%)</title><rect x="1080.7" y="805" width="35.3" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="1083.72" y="815.5" >st..</text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::StartThreadWrapper (15,415,069,911,521 samples, 99.08%)</title><rect x="16.2" y="853" width="1169.1" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="19.16" y="863.5" >rocksdb::(anonymous namespace)::StartThreadWrapper</text>
+</g>
+<g >
+<title>rocksdb::Cleanable::Cleanable (25,976,276,230 samples, 0.17%)</title><rect x="771.1" y="757" width="1.9" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="774.06" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,798,909,607 samples, 0.02%)</title><rect x="12.9" y="773" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.91" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,438,477,646 samples, 0.01%)</title><rect x="1186.9" y="117" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.94" y="127.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,711,423,844 samples, 0.01%)</title><rect x="1186.9" y="373" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="383.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,688,101,760 samples, 0.01%)</title><rect x="14.3" y="293" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="149" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="159.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,574,363,942 samples, 0.01%)</title><rect x="1186.9" y="165" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.93" y="175.5" ></text>
+</g>
+<g >
+<title>__flush_smp_call_function_queue (1,553,275,706 samples, 0.01%)</title><rect x="1189.3" y="789" width="0.1" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="1192.33" y="799.5" ></text>
+</g>
+<g >
+<title>do_idle (16,479,182,985 samples, 0.11%)</title><rect x="1188.5" y="821" width="1.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1191.55" y="831.5" ></text>
+</g>
+<g >
+<title>[sshd] (2,407,270,521 samples, 0.02%)</title><rect x="1188.3" y="853" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1191.34" y="863.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,763,182,419 samples, 0.01%)</title><rect x="14.3" y="533" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="543.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::ReturnThreadLocalSuperVersion (1,127,929,113,790 samples, 7.25%)</title><rect x="496.9" y="757" width="85.5" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="499.85" y="767.5" >rocksdb::C..</text>
+</g>
+<g >
+<title>[unknown] (1,809,101,725 samples, 0.01%)</title><rect x="13.8" y="869" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.76" y="879.5" ></text>
+</g>
+<g >
+<title>rocksdb::Cleanable::~Cleanable (54,808,073,231 samples, 0.35%)</title><rect x="370.6" y="773" width="4.2" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="373.64" y="783.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::GetThreadLocalSuperVersion (1,131,536,104,039 samples, 7.27%)</title><rect x="374.8" y="773" width="85.8" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="377.79" y="783.5" >rocksdb::C..</text>
+</g>
+<g >
+<title>[unknown] (1,698,220,506 samples, 0.01%)</title><rect x="14.3" y="437" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="447.5" ></text>
+</g>
+<g >
+<title>[kubelet] (2,480,877,732 samples, 0.02%)</title><rect x="1186.0" y="581" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.97" y="591.5" ></text>
+</g>
+<g >
+<title>[kubelet] (4,330,097,141 samples, 0.03%)</title><rect x="1185.8" y="677" width="0.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1188.84" y="687.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,702,658 samples, 0.01%)</title><rect x="14.3" y="197" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,708,906,274 samples, 0.01%)</title><rect x="14.3" y="453" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="463.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,606,216,775 samples, 0.02%)</title><rect x="12.9" y="693" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="703.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::Swap (921,088,543,881 samples, 5.92%)</title><rect x="387.1" y="757" width="69.9" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="390.11" y="767.5" >rocksdb..</text>
+</g>
+<g >
+<title>do_sys_openat2 (2,332,184,961 samples, 0.01%)</title><rect x="1187.2" y="789" width="0.2" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1190.24" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,975,244,090 samples, 0.02%)</title><rect x="12.9" y="821" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.90" y="831.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,680,005,873 samples, 0.01%)</title><rect x="14.3" y="53" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.34" y="63.5" ></text>
+</g>
+<g >
+<title>rocksdb::PerfStepTimer::Stop (94,292,661,126 samples, 0.61%)</title><rect x="879.6" y="789" width="7.1" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="882.59" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,635,645,814 samples, 0.01%)</title><rect x="13.8" y="725" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.77" y="735.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,888,110,610 samples, 0.01%)</title><rect x="14.3" y="549" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.33" y="559.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,385,564,557 samples, 0.01%)</title><rect x="10.6" y="853" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.58" y="863.5" ></text>
+</g>
+<g >
+<title>schedule_idle (4,278,847,766 samples, 0.03%)</title><rect x="1189.5" y="805" width="0.3" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1192.45" y="815.5" ></text>
+</g>
+<g >
+<title>rocksdb::LookupKey::LookupKey (13,262,223,008 samples, 0.09%)</title><rect x="590.3" y="773" width="1.0" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="593.27" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,835,025,064 samples, 0.01%)</title><rect x="1186.9" y="485" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.91" y="495.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,942,590,770 samples, 0.02%)</title><rect x="12.9" y="789" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.90" y="799.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::GetFromList (262,549,373,396 samples, 1.69%)</title><rect x="618.0" y="757" width="19.9" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="621.01" y="767.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,976,777,715 samples, 0.02%)</title><rect x="12.9" y="837" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.90" y="847.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,771,590,976 samples, 0.01%)</title><rect x="1186.9" y="389" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.91" y="399.5" ></text>
+</g>
+<g >
+<title>rocksdb::EncodeVarint32 (1,884,741,151 samples, 0.01%)</title><rect x="586.3" y="773" width="0.2" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="589.32" y="783.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,700,038,042 samples, 0.01%)</title><rect x="1186.9" y="325" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1189.92" y="335.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,804,819,238 samples, 0.01%)</title><rect x="13.8" y="805" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="16.76" y="815.5" ></text>
+</g>
+</g>
+</svg>
