@@ -1,0 +1,1201 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="390" onload="init(evt)" viewBox="0 0 1200 390" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="390.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="373" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="373" > </text>
+<g id="frames">
+<g >
+<title>[kubelet] (2,529,398,837 samples, 0.01%)</title><rect x="1188.0" y="261" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.04" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,687,195,563 samples, 0.01%)</title><rect x="12.9" y="133" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.93" y="143.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::FilePicker::GetNextFile (178,148,202,715 samples, 0.97%)</title><rect x="765.6" y="197" width="11.5" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="768.64" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,972,583,647 samples, 0.01%)</title><rect x="12.9" y="309" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="319.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,291,642,776 samples, 0.01%)</title><rect x="12.2" y="229" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.21" y="239.5" ></text>
+</g>
+<g >
+<title>enqueue_task_fair (1,627,677,397 samples, 0.01%)</title><rect x="1189.2" y="37" width="0.1" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1192.21" y="47.5" ></text>
+</g>
+<g >
+<title>[kubelet] (1,859,109,530 samples, 0.01%)</title><rect x="1188.1" y="213" width="0.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.08" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::Get (474,338,700,180 samples, 2.60%)</title><rect x="612.4" y="213" width="30.6" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="615.41" y="223.5" >ro..</text>
+</g>
+<g >
+<title>[unknown] (1,913,950,008 samples, 0.01%)</title><rect x="12.5" y="309" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="319.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,808,501,810 samples, 0.01%)</title><rect x="12.7" y="309" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.71" y="319.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,632,506,168 samples, 0.01%)</title><rect x="12.9" y="117" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.93" y="127.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,809,594,581 samples, 0.01%)</title><rect x="12.9" y="165" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.93" y="175.5" ></text>
+</g>
+<g >
+<title>swapper (11,981,941,069 samples, 0.07%)</title><rect x="1189.1" y="325" width="0.8" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1192.13" y="335.5" ></text>
+</g>
+<g >
+<title>std::_Function_base::~_Function_base (88,475,868,563 samples, 0.48%)</title><rect x="863.8" y="213" width="5.8" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="866.84" y="223.5" ></text>
+</g>
+<g >
+<title>[kubelet] (2,037,205,957 samples, 0.01%)</title><rect x="1188.1" y="229" width="0.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.06" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::HistogramStat::Add (3,288,508,053 samples, 0.02%)</title><rect x="933.0" y="245" width="0.2" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="935.95" y="255.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Swap (54,635,380,079 samples, 0.30%)</title><rect x="458.4" y="197" width="3.6" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="461.44" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,616,242,299 samples, 0.01%)</title><rect x="12.2" y="133" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.25" y="143.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (317,023,848,955 samples, 1.73%)</title><rect x="1046.3" y="213" width="20.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1049.29" y="223.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1,713,614,897 samples, 0.01%)</title><rect x="1188.5" y="277" width="0.1" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1191.47" y="287.5" ></text>
+</g>
+<g >
+<title>[kubelet] (2,562,502,642 samples, 0.01%)</title><rect x="1188.0" y="309" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.04" y="319.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::GetImpl (10,529,944,231,735 samples, 57.61%)</title><rect x="190.9" y="229" width="679.8" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="193.88" y="239.5" >rocksdb::DBImpl::GetImpl</text>
+</g>
+<g >
+<title>[unknown] (1,855,223,874 samples, 0.01%)</title><rect x="12.5" y="197" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="207.5" ></text>
+</g>
+<g >
+<title>rocksdb::Stats::FinishedOps (69,571,019,182 samples, 0.38%)</title><rect x="1149.7" y="261" width="4.5" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1152.69" y="271.5" ></text>
+</g>
+<g >
+<title>cpuidle_enter_state (6,618,753,026 samples, 0.04%)</title><rect x="1189.2" y="213" width="0.4" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="1192.16" y="223.5" ></text>
+</g>
+<g >
+<title>seq_read (3,477,057,678 samples, 0.02%)</title><rect x="1188.9" y="213" width="0.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1191.88" y="223.5" ></text>
+</g>
+<g >
+<title>awk (2,067,477,206 samples, 0.01%)</title><rect x="14.1" y="325" width="0.1" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="17.05" y="335.5" ></text>
+</g>
+<g >
+<title>rocksdb::Benchmark::ReadRandom (17,365,833,595,705 samples, 95.01%)</title><rect x="22.8" y="261" width="1121.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="25.82" y="271.5" >rocksdb::Benchmark::ReadRandom</text>
+</g>
+<g >
+<title>do_sys_openat2 (1,581,979,153 samples, 0.01%)</title><rect x="1188.5" y="229" width="0.1" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1191.47" y="239.5" ></text>
+</g>
+<g >
+<title>ksys_read (3,587,022,684 samples, 0.02%)</title><rect x="1188.9" y="245" width="0.2" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1191.87" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,612,760,464 samples, 0.01%)</title><rect x="12.7" y="197" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.72" y="207.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::Get (258,578,040,793 samples, 1.41%)</title><rect x="595.7" y="213" width="16.7" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="598.72" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::FilePicker::GetNextFile (14,977,719,862 samples, 0.08%)</title><rect x="369.5" y="213" width="0.9" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="372.47" y="223.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,911,878,464 samples, 0.01%)</title><rect x="12.5" y="245" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="255.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::GetImpl (84,581,567,614 samples, 0.46%)</title><rect x="924.6" y="245" width="5.5" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="927.64" y="255.5" ></text>
+</g>
+<g >
+<title>rocksdb::Random::GetTLSInstance (41,464,819,099 samples, 0.23%)</title><rect x="860.5" y="181" width="2.7" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="863.53" y="191.5" ></text>
+</g>
+<g >
+<title>iptables (2,108,021,353 samples, 0.01%)</title><rect x="1187.9" y="325" width="0.1" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1190.88" y="335.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::ReturnAndCleanupSuperVersion (41,305,865,556 samples, 0.23%)</title><rect x="870.7" y="229" width="2.7" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="873.70" y="239.5" ></text>
+</g>
+<g >
+<title>:1048295 (1,913,950,008 samples, 0.01%)</title><rect x="12.5" y="325" width="0.1" height="15.0" fill="rgb(231,119,28)" rx="2" ry="2" />
+<text  x="15.50" y="335.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::GetThreadLocalSuperVersion (1,349,406,759,763 samples, 7.38%)</title><rect x="374.9" y="213" width="87.1" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="377.85" y="223.5" >rocksdb::C..</text>
+</g>
+<g >
+<title>[unknown] (1,913,950,008 samples, 0.01%)</title><rect x="12.5" y="293" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,808,501,810 samples, 0.01%)</title><rect x="12.7" y="293" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.71" y="303.5" ></text>
+</g>
+<g >
+<title>kubelet (2,626,452,392 samples, 0.01%)</title><rect x="1188.0" y="325" width="0.2" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1191.04" y="335.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (3,141,064,350 samples, 0.02%)</title><rect x="1189.2" y="149" width="0.2" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="1192.19" y="159.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,776,974,020 samples, 0.01%)</title><rect x="12.2" y="181" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.24" y="191.5" ></text>
+</g>
+<g >
+<title>[kubelet] (2,556,545,582 samples, 0.01%)</title><rect x="1188.0" y="277" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.04" y="287.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,972,583,647 samples, 0.01%)</title><rect x="12.9" y="293" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,758,163,517 samples, 0.01%)</title><rect x="12.9" y="149" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.93" y="159.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (3,254,371,057 samples, 0.02%)</title><rect x="1189.2" y="165" width="0.2" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1192.18" y="175.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,301,464,710 samples, 0.01%)</title><rect x="12.2" y="277" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.21" y="287.5" ></text>
+</g>
+<g >
+<title>__do_softirq (1,853,508,353 samples, 0.01%)</title><rect x="1189.4" y="133" width="0.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1192.39" y="143.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::DefaultColumnFamily (48,037,602,604 samples, 0.26%)</title><rect x="1143.9" y="261" width="3.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1146.93" y="271.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (42,428,811,601 samples, 0.23%)</title><rect x="366.7" y="213" width="2.8" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="369.73" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::Benchmark::ThreadBody (18,174,835,062,781 samples, 99.44%)</title><rect x="14.5" y="277" width="1173.3" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="17.49" y="287.5" >rocksdb::Benchmark::ThreadBody</text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Instance (38,991,758,804 samples, 0.21%)</title><rect x="507.5" y="181" width="2.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="510.55" y="191.5" ></text>
+</g>
+<g >
+<title>[kubelet] (2,556,545,582 samples, 0.01%)</title><rect x="1188.0" y="293" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.04" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,635,167,282 samples, 0.01%)</title><rect x="12.5" y="117" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.51" y="127.5" ></text>
+</g>
+<g >
+<title>ttwu_do_activate (2,335,346,174 samples, 0.01%)</title><rect x="1189.2" y="69" width="0.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1192.21" y="79.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;rocksdb::OperationType, std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt;, std::allocator&lt;std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;rocksdb::OperationType&gt;, std::hash&lt;unsigned char&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt;, true&gt;::operator[] (51,963,539,804 samples, 0.28%)</title><rect x="1118.7" y="245" width="3.3" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1121.65" y="255.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::GetFromList (92,653,857,724 samples, 0.51%)</title><rect x="643.0" y="213" width="6.0" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="646.03" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::HistogramStat::Add (72,204,524,936 samples, 0.40%)</title><rect x="1074.8" y="229" width="4.6" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1077.79" y="239.5" ></text>
+</g>
+<g >
+<title>ps (10,703,499,221 samples, 0.06%)</title><rect x="1188.4" y="325" width="0.7" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1191.41" y="335.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,818,604,646 samples, 0.01%)</title><rect x="12.5" y="149" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="159.5" ></text>
+</g>
+<g >
+<title>rocksdb::EncodeVarint32 (1,976,702,171 samples, 0.01%)</title><rect x="590.4" y="213" width="0.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="593.39" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::ReadOptions::ReadOptions (166,007,186,662 samples, 0.91%)</title><rect x="933.2" y="245" width="10.7" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="936.16" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,769,204,163 samples, 0.01%)</title><rect x="12.2" y="165" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.24" y="175.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::GetThreadLocal (41,926,606,162 samples, 0.23%)</title><rect x="583.5" y="181" width="2.7" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="586.49" y="191.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,631,295,500 samples, 0.01%)</title><rect x="12.7" y="213" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.72" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::GetThreadLocalSuperVersion (42,858,970,165 samples, 0.23%)</title><rect x="174.6" y="229" width="2.7" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="177.58" y="239.5" ></text>
+</g>
+<g >
+<title>db_bench (18,176,124,707,511 samples, 99.44%)</title><rect x="14.4" y="325" width="1173.4" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="17.41" y="335.5" >db_bench</text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::CompareAndSwap (29,191,457,210 samples, 0.16%)</title><rect x="588.5" y="197" width="1.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="591.51" y="207.5" ></text>
+</g>
+<g >
+<title>rocksdb::GetContext::GetContext (1,291,534,484,230 samples, 7.07%)</title><rect x="779.8" y="197" width="83.4" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="782.83" y="207.5" >rocksdb::..</text>
+</g>
+<g >
+<title>[unknown] (2,297,601,777 samples, 0.01%)</title><rect x="12.2" y="245" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.21" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,856,535,501 samples, 0.01%)</title><rect x="12.9" y="213" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::Cleanable::Cleanable (98,377,942,610 samples, 0.54%)</title><rect x="168.2" y="229" width="6.4" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="171.20" y="239.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_dispose (17,418,480,450 samples, 0.10%)</title><rect x="869.6" y="213" width="1.1" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="872.55" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::CompareAndSwap (93,882,128,768 samples, 0.51%)</title><rect x="501.5" y="181" width="6.0" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="504.49" y="191.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,845,852,823 samples, 0.01%)</title><rect x="12.5" y="181" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="191.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,626,124,171 samples, 0.01%)</title><rect x="12.5" y="101" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.51" y="111.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::cfd (97,974,211,312 samples, 0.54%)</title><rect x="177.3" y="229" width="6.4" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="180.35" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::GetFromList (331,335,142,262 samples, 1.81%)</title><rect x="621.6" y="197" width="21.4" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="624.64" y="207.5" >r..</text>
+</g>
+<g >
+<title>cpuidle_idle_call (8,095,972,612 samples, 0.04%)</title><rect x="1189.1" y="245" width="0.6" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="1192.14" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,831,453,820 samples, 0.01%)</title><rect x="12.9" y="181" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.93" y="191.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,800,134,300 samples, 0.01%)</title><rect x="12.2" y="197" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.24" y="207.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::ReturnThreadLocalSuperVersion (36,184,256,723 samples, 0.20%)</title><rect x="462.0" y="213" width="2.3" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="464.97" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::cfd (89,362,235,141 samples, 0.49%)</title><rect x="491.4" y="197" width="5.8" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="494.42" y="207.5" ></text>
+</g>
+<g >
+<title>:1048288 (2,301,464,710 samples, 0.01%)</title><rect x="12.2" y="325" width="0.2" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="15.21" y="335.5" ></text>
+</g>
+<g >
+<title>secondary_startup_64_no_verify (11,841,079,916 samples, 0.06%)</title><rect x="1189.1" y="309" width="0.8" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="1192.14" y="319.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,909,143,540 samples, 0.01%)</title><rect x="12.5" y="229" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="239.5" ></text>
+</g>
+<g >
+<title>:1048310 (1,972,583,647 samples, 0.01%)</title><rect x="12.9" y="325" width="0.1" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="15.92" y="335.5" ></text>
+</g>
+<g >
+<title>rocksdb::MergeContext::~MergeContext (7,317,481,492 samples, 0.04%)</title><rect x="649.0" y="213" width="0.5" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="652.01" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::Status::operator= (223,363,430,833 samples, 1.22%)</title><rect x="649.5" y="213" width="14.4" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="652.50" y="223.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,301,464,710 samples, 0.01%)</title><rect x="12.2" y="261" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.21" y="271.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::GetComparator (44,282,252,771 samples, 0.24%)</title><rect x="464.3" y="213" width="2.9" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="467.31" y="223.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (1,883,853,313 samples, 0.01%)</title><rect x="1189.4" y="149" width="0.1" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1192.39" y="159.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (5,278,506,359 samples, 0.03%)</title><rect x="1189.2" y="181" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1192.18" y="191.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyData::ReturnThreadLocalSuperVersion (1,345,077,230,268 samples, 7.36%)</title><rect x="499.4" y="197" width="86.8" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="502.36" y="207.5" >rocksdb::C..</text>
+</g>
+<g >
+<title>std::_Hashtable&lt;rocksdb::OperationType, std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt;, std::allocator&lt;std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;rocksdb::OperationType&gt;, std::hash&lt;unsigned char&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::find (530,600,305,278 samples, 2.90%)</title><rect x="1084.4" y="245" width="34.3" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="1087.40" y="255.5" >st..</text>
+</g>
+<g >
+<title>:1048305 (1,808,501,810 samples, 0.01%)</title><rect x="12.7" y="325" width="0.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="15.71" y="335.5" ></text>
+</g>
+<g >
+<title>[unknown] (5,036,595,324 samples, 0.03%)</title><rect x="1188.4" y="309" width="0.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1191.42" y="319.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (2,878,045,893 samples, 0.02%)</title><rect x="1189.2" y="133" width="0.2" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="1192.19" y="143.5" ></text>
+</g>
+<g >
+<title>rocksdb::Cleanable::Cleanable (41,565,679,878 samples, 0.23%)</title><rect x="777.1" y="197" width="2.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="780.14" y="207.5" ></text>
+</g>
+<g >
+<title>run_rebalance_domains (1,727,251,671 samples, 0.01%)</title><rect x="1189.4" y="117" width="0.1" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1192.40" y="127.5" ></text>
+</g>
+<g >
+<title>bash (3,004,705,890 samples, 0.02%)</title><rect x="14.2" y="325" width="0.2" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="17.18" y="335.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::ReturnAndCleanupSuperVersion (1,443,629,907,565 samples, 7.90%)</title><rect x="497.2" y="213" width="93.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="500.19" y="223.5" >rocksdb::DB..</text>
+</g>
+<g >
+<title>rocksdb::PerfStepTimer::Stop (101,670,511,897 samples, 0.56%)</title><rect x="883.0" y="229" width="6.5" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="885.96" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::FailIfCfHasTs (465,119,502,970 samples, 2.54%)</title><rect x="467.2" y="213" width="30.0" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="470.16" y="223.5" >ro..</text>
+</g>
+<g >
+<title>rocksdb::Version::Get (3,032,036,504,031 samples, 16.59%)</title><rect x="668.1" y="213" width="195.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="671.10" y="223.5" >rocksdb::Version::Get</text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (3,587,022,684 samples, 0.02%)</title><rect x="1188.9" y="293" width="0.2" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1191.87" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,571,856,753 samples, 0.01%)</title><rect x="12.2" y="117" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.25" y="127.5" ></text>
+</g>
+<g >
+<title>rocksdb::StopWatch::~StopWatch (12,574,096,781 samples, 0.07%)</title><rect x="916.6" y="229" width="0.8" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="919.58" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::ColumnFamilyHandleImpl::GetComparator (40,925,522,117 samples, 0.22%)</title><rect x="488.8" y="197" width="2.6" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="491.78" y="207.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::PosixClock::NowMicros (317,023,848,955 samples, 1.73%)</title><rect x="1046.3" y="229" width="20.5" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1049.29" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::StopWatch::~StopWatch (18,851,598,515 samples, 0.10%)</title><rect x="663.9" y="213" width="1.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="666.92" y="223.5" ></text>
+</g>
+<g >
+<title>all (18,278,063,563,875 samples, 100%)</title><rect x="10.0" y="341" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" ></text>
+</g>
+<g >
+<title>rocksdb::Version::Get (112,219,450,190 samples, 0.61%)</title><rect x="917.4" y="229" width="7.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="920.39" y="239.5" ></text>
+</g>
+<g >
+<title>vfs_read (3,477,057,678 samples, 0.02%)</title><rect x="1188.9" y="229" width="0.2" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="1191.88" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Instance (78,316,766,276 samples, 0.43%)</title><rect x="377.9" y="197" width="5.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="380.88" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,301,464,710 samples, 0.01%)</title><rect x="12.2" y="309" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.21" y="319.5" ></text>
+</g>
+<g >
+<title>do_idle (11,809,139,151 samples, 0.06%)</title><rect x="1189.1" y="261" width="0.8" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1192.14" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,965,553,427 samples, 0.01%)</title><rect x="12.9" y="229" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="239.5" ></text>
+</g>
+<g >
+<title>cpuidle_enter (6,701,299,994 samples, 0.04%)</title><rect x="1189.2" y="229" width="0.4" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1192.15" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTable::Get (56,588,081,233 samples, 0.31%)</title><rect x="873.4" y="229" width="3.6" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="876.37" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::MemTableListVersion::Get (91,297,589,642 samples, 0.50%)</title><rect x="877.0" y="229" width="5.9" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="880.02" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::Swap (1,090,763,480,053 samples, 5.97%)</title><rect x="388.0" y="197" width="70.4" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="391.02" y="207.5" >rocksdb..</text>
+</g>
+<g >
+<title>[kubelet] (1,553,876,226 samples, 0.01%)</title><rect x="1188.1" y="165" width="0.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.08" y="175.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,776,385,137 samples, 0.01%)</title><rect x="12.7" y="229" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.71" y="239.5" ></text>
+</g>
+<g >
+<title>TLS init function for rocksdb::perf_context (246,185,466,357 samples, 1.35%)</title><rect x="152.3" y="229" width="15.9" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="155.31" y="239.5" ></text>
+</g>
+<g >
+<title>start_thread (18,174,835,062,781 samples, 99.44%)</title><rect x="14.5" y="309" width="1173.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="17.49" y="319.5" >start_thread</text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::operator (521,230,424,196 samples, 2.85%)</title><rect x="1154.2" y="261" width="33.6" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1157.18" y="271.5" >st..</text>
+</g>
+<g >
+<title>[unknown] (1,604,767,568 samples, 0.01%)</title><rect x="14.2" y="309" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="17.19" y="319.5" ></text>
+</g>
+<g >
+<title>[db_bench] (63,705,408,575 samples, 0.35%)</title><rect x="14.5" y="261" width="4.1" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="17.49" y="271.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (2,499,548,814 samples, 0.01%)</title><rect x="1189.2" y="85" width="0.2" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="1192.20" y="95.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (5,305,938,368 samples, 0.03%)</title><rect x="1189.2" y="197" width="0.3" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="1192.18" y="207.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (3,587,022,684 samples, 0.02%)</title><rect x="1188.9" y="277" width="0.2" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1191.87" y="287.5" ></text>
+</g>
+<g >
+<title>proc_pid_status (2,265,359,545 samples, 0.01%)</title><rect x="1188.9" y="165" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.92" y="175.5" ></text>
+</g>
+<g >
+<title>rocksdb::Random::GetTLSInstance (9,809,161,480 samples, 0.05%)</title><rect x="863.2" y="197" width="0.6" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="866.21" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,301,464,710 samples, 0.01%)</title><rect x="12.2" y="293" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.21" y="303.5" ></text>
+</g>
+<g >
+<title>rocksdb::HistogramBucketMapper::IndexForValue (124,359,336,605 samples, 0.68%)</title><rect x="1066.8" y="229" width="8.0" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1069.76" y="239.5" ></text>
+</g>
+<g >
+<title>[db_bench] (51,213,670,691 samples, 0.28%)</title><rect x="363.4" y="213" width="3.3" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="366.43" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::Cleanable::~Cleanable (68,406,914,714 samples, 0.37%)</title><rect x="370.4" y="213" width="4.5" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="373.44" y="223.5" ></text>
+</g>
+<g >
+<title>read (3,587,022,684 samples, 0.02%)</title><rect x="1188.9" y="309" width="0.2" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="1191.87" y="319.5" ></text>
+</g>
+<g >
+<title>[kubelet] (2,350,870,644 samples, 0.01%)</title><rect x="1188.0" y="245" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.04" y="255.5" ></text>
+</g>
+<g >
+<title>proc_single_show (2,998,979,706 samples, 0.02%)</title><rect x="1188.9" y="181" width="0.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1191.91" y="191.5" ></text>
+</g>
+<g >
+<title>rocksdb::Stats::FinishedOps (2,176,600,592,325 samples, 11.91%)</title><rect x="943.9" y="245" width="140.5" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="946.88" y="255.5" >rocksdb::Stats::F..</text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;rocksdb::OperationType, std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt;, std::allocator&lt;std::pair&lt;rocksdb::OperationType const, std::shared_ptr&lt;rocksdb::HistogramImpl&gt; &gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;rocksdb::OperationType&gt;, std::hash&lt;unsigned char&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt;, true&gt;::operator[] (76,667,304,011 samples, 0.42%)</title><rect x="1079.4" y="229" width="5.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1082.45" y="239.5" ></text>
+</g>
+<g >
+<title>schedule_idle (2,391,344,500 samples, 0.01%)</title><rect x="1189.7" y="245" width="0.2" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1192.73" y="255.5" ></text>
+</g>
+<g >
+<title>__schedule (2,340,775,586 samples, 0.01%)</title><rect x="1189.7" y="229" width="0.2" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="1192.73" y="239.5" ></text>
+</g>
+<g >
+<title>cpu_startup_entry (11,823,746,957 samples, 0.06%)</title><rect x="1189.1" y="277" width="0.8" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1192.14" y="287.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,862,032,406 samples, 0.01%)</title><rect x="12.5" y="213" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="223.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,805,937,336 samples, 0.01%)</title><rect x="12.7" y="245" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.71" y="255.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (1,886,580,564 samples, 0.01%)</title><rect x="1189.4" y="165" width="0.1" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1192.39" y="175.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::Swap (10,545,722,999 samples, 0.06%)</title><rect x="665.1" y="213" width="0.7" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="668.14" y="223.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,968,050,655 samples, 0.01%)</title><rect x="12.9" y="245" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,804,046,753 samples, 0.01%)</title><rect x="12.2" y="213" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.24" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::CompareAndSwap (35,747,709,599 samples, 0.20%)</title><rect x="586.2" y="197" width="2.3" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="589.20" y="207.5" ></text>
+</g>
+<g >
+<title>enqueue_task (2,282,607,924 samples, 0.01%)</title><rect x="1189.2" y="53" width="0.2" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1192.21" y="63.5" ></text>
+</g>
+<g >
+<title>ls (2,612,100,975 samples, 0.01%)</title><rect x="1188.2" y="325" width="0.2" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="1191.23" y="335.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::Get (41,180,529,878 samples, 0.23%)</title><rect x="1147.0" y="261" width="2.7" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="1150.03" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,708,473,756 samples, 0.01%)</title><rect x="12.5" y="133" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.51" y="143.5" ></text>
+</g>
+<g >
+<title>hrtimer_wakeup (2,507,315,237 samples, 0.01%)</title><rect x="1189.2" y="117" width="0.2" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="1192.20" y="127.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,972,583,647 samples, 0.01%)</title><rect x="12.9" y="277" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="287.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::CompareAndSwap (1,137,372,557,932 samples, 6.22%)</title><rect x="510.1" y="181" width="73.4" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="513.06" y="191.5" >rocksdb:..</text>
+</g>
+<g >
+<title>rocksdb::HistogramImpl::Add (44,164,138,806 samples, 0.24%)</title><rect x="930.1" y="245" width="2.9" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="933.10" y="255.5" ></text>
+</g>
+<g >
+<title>__GI___libc_open (1,713,614,897 samples, 0.01%)</title><rect x="1188.5" y="293" width="0.1" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="1191.47" y="303.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::_M_gen_rand (177,962,856,183 samples, 0.97%)</title><rect x="1122.0" y="245" width="11.5" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1125.01" y="255.5" ></text>
+</g>
+<g >
+<title>__x64_sys_read (3,587,022,684 samples, 0.02%)</title><rect x="1188.9" y="261" width="0.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1191.87" y="271.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::StaticMeta::GetThreadLocal (78,791,661,226 samples, 0.43%)</title><rect x="382.9" y="197" width="5.1" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="385.94" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,913,950,008 samples, 0.01%)</title><rect x="12.5" y="277" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="287.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (65,276,482,641 samples, 0.36%)</title><rect x="18.6" y="261" width="4.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="21.61" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,808,501,810 samples, 0.01%)</title><rect x="12.7" y="277" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.71" y="287.5" ></text>
+</g>
+<g >
+<title>rocksdb::GetContext::GetContext (64,299,481,167 samples, 0.35%)</title><rect x="590.5" y="213" width="4.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="593.52" y="223.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::FailIfCfHasTs (111,686,592,063 samples, 0.61%)</title><rect x="183.7" y="229" width="7.2" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="186.67" y="239.5" ></text>
+</g>
+<g >
+<title>rocksdb::ReadOptions::ReadOptions (419,071,673,440 samples, 2.29%)</title><rect x="889.5" y="229" width="27.1" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="892.53" y="239.5" >r..</text>
+</g>
+<g >
+<title>seq_read_iter (3,477,057,678 samples, 0.02%)</title><rect x="1188.9" y="197" width="0.2" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="1191.88" y="207.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,972,583,647 samples, 0.01%)</title><rect x="12.9" y="261" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="271.5" ></text>
+</g>
+<g >
+<title>rocksdb::DBImpl::Get (12,475,027,007,263 samples, 68.25%)</title><rect x="119.3" y="245" width="805.3" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="122.27" y="255.5" >rocksdb::DBImpl::Get</text>
+</g>
+<g >
+<title>do_syscall_64 (1,713,614,897 samples, 0.01%)</title><rect x="1188.5" y="261" width="0.1" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1191.47" y="271.5" ></text>
+</g>
+<g >
+<title>wake_up_process (2,505,686,185 samples, 0.01%)</title><rect x="1189.2" y="101" width="0.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="1192.20" y="111.5" ></text>
+</g>
+<g >
+<title>__x64_sys_openat (1,581,979,153 samples, 0.01%)</title><rect x="1188.5" y="245" width="0.1" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="1191.47" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,913,448,696 samples, 0.01%)</title><rect x="12.5" y="261" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,808,501,810 samples, 0.01%)</title><rect x="12.7" y="261" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.71" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,739,613,976 samples, 0.01%)</title><rect x="12.2" y="149" width="0.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.25" y="159.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,842,813,071 samples, 0.01%)</title><rect x="12.5" y="165" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.50" y="175.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::operator (161,608,996,110 samples, 0.88%)</title><rect x="1133.5" y="245" width="10.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1136.50" y="255.5" ></text>
+</g>
+<g >
+<title>rocksdb::(anonymous namespace)::StartThreadWrapper (18,174,835,062,781 samples, 99.44%)</title><rect x="14.5" y="293" width="1173.3" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="17.49" y="303.5" >rocksdb::(anonymous namespace)::StartThreadWrapper</text>
+</g>
+<g >
+<title>[kubelet] (1,795,733,933 samples, 0.01%)</title><rect x="1188.1" y="197" width="0.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.08" y="207.5" ></text>
+</g>
+<g >
+<title>rocksdb::ThreadLocalPtr::Swap (35,247,493,228 samples, 0.19%)</title><rect x="665.8" y="213" width="2.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="668.82" y="223.5" ></text>
+</g>
+<g >
+<title>[kubelet] (1,719,232,159 samples, 0.01%)</title><rect x="1188.1" y="181" width="0.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1191.08" y="191.5" ></text>
+</g>
+<g >
+<title>rocksdb::LookupKey::LookupKey (16,235,561,791 samples, 0.09%)</title><rect x="594.7" y="213" width="1.0" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="597.67" y="223.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,853,754,376 samples, 0.01%)</title><rect x="12.9" y="197" width="0.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="15.92" y="207.5" ></text>
+</g>
+<g >
+<title>start_secondary (11,824,874,871 samples, 0.06%)</title><rect x="1189.1" y="293" width="0.8" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1192.14" y="303.5" ></text>
+</g>
+</g>
+</svg>
