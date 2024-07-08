@@ -1,0 +1,3021 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="422" onload="init(evt)" viewBox="0 0 1200 422" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="422.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="405" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="405" > </text>
+<g id="frames">
+<g >
+<title>Ljava/io/ObjectInputStream$HandleTable:::finish (1,415,125,325 samples, 0.22%)</title><rect x="199.0" y="341" width="2.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="201.95" y="351.5" ></text>
+</g>
+<g >
+<title>CompressedReadStream::read_int_mb (212,340,636 samples, 0.03%)</title><rect x="862.8" y="261" width="0.4" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="865.80" y="271.5" ></text>
+</g>
+<g >
+<title>nmethod::find_pc_desc_internal (106,468,119 samples, 0.02%)</title><rect x="867.5" y="261" width="0.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="870.46" y="271.5" ></text>
+</g>
+<g >
+<title>frame::is_interpreted_frame (141,768,923 samples, 0.02%)</title><rect x="863.2" y="261" width="0.3" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="866.25" y="271.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_array_class_or_null (1,754,081,170 samples, 0.27%)</title><rect x="830.0" y="229" width="3.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="833.00" y="239.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFLength (391,695,980 samples, 0.06%)</title><rect x="841.9" y="277" width="0.7" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="844.93" y="287.5" ></text>
+</g>
+<g >
+<title>Dictionary::find (105,754,527 samples, 0.02%)</title><rect x="833.3" y="213" width="0.2" height="15.0" fill="rgb(205,205,60)" rx="2" ry="2" />
+<text  x="836.28" y="223.5" ></text>
+</g>
+<g >
+<title>wake_affine (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="197" width="0.2" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="1173.49" y="207.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (70,187,088 samples, 0.01%)</title><rect x="208.6" y="293" width="0.1" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="211.61" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$HandleTable:::assign (599,827,251 samples, 0.09%)</title><rect x="197.9" y="341" width="1.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="200.87" y="351.5" ></text>
+</g>
+<g >
+<title>finish_task_switch.isra.0 (2,855,934,297 samples, 0.44%)</title><rect x="1164.6" y="181" width="5.2" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="1167.63" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::defaultReadFields (9,018,470,036 samples, 1.38%)</title><rect x="263.2" y="341" width="16.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="266.25" y="351.5" ></text>
+</g>
+<g >
+<title>frame::sender (7,453,077,872 samples, 1.14%)</title><rect x="473.3" y="277" width="13.4" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="476.28" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::isExternalizable (350,734,709 samples, 0.05%)</title><rect x="1039.7" y="325" width="0.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1042.73" y="335.5" ></text>
+</g>
+<g >
+<title>find_class_from_class_loader (6,677,338,337 samples, 1.02%)</title><rect x="354.2" y="277" width="12.1" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="357.24" y="287.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (2,855,934,297 samples, 0.44%)</title><rect x="1164.6" y="165" width="5.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="1167.63" y="175.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (197,640,652 samples, 0.03%)</title><rect x="398.7" y="277" width="0.4" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="401.73" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::defaultWriteFields (73,441,461 samples, 0.01%)</title><rect x="964.9" y="325" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="967.93" y="335.5" ></text>
+</g>
+<g >
+<title>set_next_entity (123,269,133 samples, 0.02%)</title><rect x="1169.8" y="149" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1172.77" y="159.5" ></text>
+</g>
+<g >
+<title>Handle::Handle (96,804,301 samples, 0.01%)</title><rect x="413.9" y="309" width="0.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="416.88" y="319.5" ></text>
+</g>
+<g >
+<title>java_lang_String::equals (104,695,324 samples, 0.02%)</title><rect x="1116.9" y="261" width="0.2" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="1119.90" y="271.5" ></text>
+</g>
+<g >
+<title>PSPromotionManager::process_array_chunk_work&lt;unsigned int&gt; (313,739,517 samples, 0.05%)</title><rect x="1180.0" y="245" width="0.5" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="1182.95" y="255.5" ></text>
+</g>
+<g >
+<title>pick_next_task (67,306,572 samples, 0.01%)</title><rect x="1151.9" y="181" width="0.1" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="1154.90" y="191.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor21:::invoke (178,304,256 samples, 0.03%)</title><rect x="778.2" y="341" width="0.4" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="781.24" y="351.5" ></text>
+</g>
+<g >
+<title>UNICODE::utf8_length (179,935,758 samples, 0.03%)</title><rect x="842.2" y="261" width="0.4" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="845.25" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::readObject (2,468,581,631 samples, 0.38%)</title><rect x="769.2" y="341" width="4.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="772.16" y="351.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_or_fail (6,366,717,579 samples, 0.97%)</title><rect x="354.7" y="261" width="11.5" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="357.74" y="271.5" ></text>
+</g>
+<g >
+<title>nmethod::is_nmethod (988,055,796 samples, 0.15%)</title><rect x="430.9" y="293" width="1.8" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="433.90" y="303.5" ></text>
+</g>
+<g >
+<title>CompressedReadStream::read_int_mb (2,159,337,822 samples, 0.33%)</title><rect x="468.1" y="277" width="3.8" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="471.05" y="287.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (70,470,856 samples, 0.01%)</title><rect x="1157.5" y="277" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1160.46" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$BlockDataInputStream:::readUTFSpan (2,319,436,659 samples, 0.35%)</title><rect x="787.6" y="325" width="4.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="790.65" y="335.5" ></text>
+</g>
+<g >
+<title>call_stub (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="213" width="0.2" height="15.0" fill="rgb(226,89,89)" rx="2" ry="2" />
+<text  x="1167.44" y="223.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (70,498,071 samples, 0.01%)</title><rect x="353.3" y="181" width="0.1" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="356.27" y="191.5" ></text>
+</g>
+<g >
+<title>Atomic::dec (70,653,057 samples, 0.01%)</title><rect x="826.8" y="261" width="0.1" height="15.0" fill="rgb(210,210,63)" rx="2" ry="2" />
+<text  x="829.80" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeArray (567,645,114 samples, 0.09%)</title><rect x="588.0" y="341" width="1.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="590.96" y="351.5" ></text>
+</g>
+<g >
+<title>Klass::is_subclass_of (5,495,504,992 samples, 0.84%)</title><rect x="500.5" y="277" width="9.9" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="503.55" y="287.5" ></text>
+</g>
+<g >
+<title>SymbolTable::lookup (1,207,371,595 samples, 0.18%)</title><rect x="827.6" y="261" width="2.1" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="830.57" y="271.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="293" width="5.6" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1167.63" y="303.5" ></text>
+</g>
+<g >
+<title>perf_adjust_freq_unthr_context (71,868,468 samples, 0.01%)</title><rect x="510.4" y="117" width="0.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="513.44" y="127.5" ></text>
+</g>
+<g >
+<title>JVM_InternString (19,358,041,088 samples, 2.95%)</title><rect x="1084.4" y="293" width="34.8" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="1087.39" y="303.5" >JV..</text>
+</g>
+<g >
+<title>FieldType::is_valid_array_signature (105,781,773 samples, 0.02%)</title><rect x="833.9" y="213" width="0.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="836.85" y="223.5" ></text>
+</g>
+<g >
+<title>JNIHandles::make_local (644,833,204 samples, 0.10%)</title><rect x="1086.0" y="277" width="1.1" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="1088.99" y="287.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (141,372,609 samples, 0.02%)</title><rect x="367.1" y="293" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="370.09" y="303.5" ></text>
+</g>
+<g >
+<title>Lsun/misc/VM:::latestUserDefinedLoader0 (15,849,578,978 samples, 2.42%)</title><rect x="845.1" y="309" width="28.5" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="848.11" y="319.5" >Ls..</text>
+</g>
+<g >
+<title>start_thread (9,890,777,495 samples, 1.51%)</title><rect x="1170.7" y="341" width="17.8" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1173.65" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::forClass (283,492,788 samples, 0.04%)</title><rect x="702.7" y="341" width="0.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="705.69" y="351.5" ></text>
+</g>
+<g >
+<title>update_process_times (70,393,686 samples, 0.01%)</title><rect x="691.8" y="213" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="694.75" y="223.5" ></text>
+</g>
+<g >
+<title>CodeCache::find_blob (3,287,673,673 samples, 0.50%)</title><rect x="478.3" y="261" width="5.9" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="481.30" y="271.5" ></text>
+</g>
+<g >
+<title>CardTableExtension::scavenge_contents_parallel (4,384,809,874 samples, 0.67%)</title><rect x="1170.7" y="277" width="7.8" height="15.0" fill="rgb(201,201,59)" rx="2" ry="2" />
+<text  x="1173.65" y="287.5" ></text>
+</g>
+<g >
+<title>wake_up_q (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="245" width="0.2" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="1173.49" y="255.5" ></text>
+</g>
+<g >
+<title>nmethod::find_pc_desc_internal (1,261,321,677 samples, 0.19%)</title><rect x="428.3" y="293" width="2.3" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="431.31" y="303.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="229" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="1024.90" y="239.5" ></text>
+</g>
+<g >
+<title>CodeCache::find_blob (634,582,564 samples, 0.10%)</title><rect x="865.1" y="245" width="1.1" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="868.10" y="255.5" ></text>
+</g>
+<g >
+<title>JavaThread::oops_do (135,663,576 samples, 0.02%)</title><rect x="1188.2" y="277" width="0.3" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="1191.22" y="287.5" ></text>
+</g>
+<g >
+<title>jbyte_arraycopy (493,977,010 samples, 0.08%)</title><rect x="245.0" y="325" width="0.9" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="247.98" y="335.5" ></text>
+</g>
+<g >
+<title>[unknown] (207,217,538,193 samples, 31.62%)</title><rect x="781.9" y="341" width="373.1" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="784.86" y="351.5" >[unknown]</text>
+</g>
+<g >
+<title>native_write_msr (2,855,934,297 samples, 0.44%)</title><rect x="1164.6" y="101" width="5.2" height="15.0" fill="rgb(237,105,105)" rx="2" ry="2" />
+<text  x="1167.63" y="111.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/String:::intern (20,206,225,406 samples, 3.08%)</title><rect x="1083.5" y="309" width="36.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1086.50" y="319.5" >Lja..</text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (141,107,433 samples, 0.02%)</title><rect x="420.6" y="293" width="0.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="423.56" y="303.5" ></text>
+</g>
+<g >
+<title>java_lang_ClassLoader::non_reflection_class_loader (140,434,008 samples, 0.02%)</title><rect x="360.7" y="229" width="0.2" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="363.66" y="239.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (105,904,167 samples, 0.02%)</title><rect x="569.4" y="325" width="0.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="572.36" y="335.5" ></text>
+</g>
+<g >
+<title>PSPromotionManager::drain_stacks_depth (954,034,734 samples, 0.15%)</title><rect x="1179.2" y="277" width="1.8" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="1182.25" y="287.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (105,885,685 samples, 0.02%)</title><rect x="832.9" y="213" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="835.90" y="223.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (70,498,071 samples, 0.01%)</title><rect x="353.3" y="213" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="356.27" y="223.5" ></text>
+</g>
+<g >
+<title>vframeStream::vframeStream (496,357,663 samples, 0.08%)</title><rect x="897.4" y="277" width="0.9" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="900.37" y="287.5" ></text>
+</g>
+<g >
+<title>skip_over_fieldname.constprop.2 (246,049,755 samples, 0.04%)</title><rect x="515.4" y="277" width="0.4" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="518.38" y="287.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (70,187,088 samples, 0.01%)</title><rect x="208.6" y="309" width="0.1" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="211.61" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::initNonProxy (4,634,083,246 samples, 0.71%)</title><rect x="720.5" y="341" width="8.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="723.54" y="351.5" ></text>
+</g>
+<g >
+<title>CodeCache::find_blob (70,567,165 samples, 0.01%)</title><rect x="510.6" y="261" width="0.2" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="513.64" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeObject0 (12,272,326,005 samples, 1.87%)</title><rect x="591.7" y="341" width="22.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="594.70" y="351.5" >L..</text>
+</g>
+<g >
+<title>__x64_sys_futex (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="293" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1173.49" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::writeNonProxy (390,843,336 samples, 0.06%)</title><rect x="762.1" y="341" width="0.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="765.13" y="351.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (70,470,856 samples, 0.01%)</title><rect x="1157.5" y="245" width="0.1" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="1160.46" y="255.5" ></text>
+</g>
+<g >
+<title>_new_array_nozero_Java (91,709,267 samples, 0.01%)</title><rect x="1155.0" y="341" width="0.2" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="1157.99" y="351.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor18:::invoke (210,229,177 samples, 0.03%)</title><rect x="777.9" y="341" width="0.3" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="780.86" y="351.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::skip_reflection_related_frames (358,067,202 samples, 0.05%)</title><rect x="899.9" y="277" width="0.7" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="902.93" y="287.5" ></text>
+</g>
+<g >
+<title>JavaCalls::call_helper (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="229" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="1167.44" y="239.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (133,114,692 samples, 0.02%)</title><rect x="1151.8" y="293" width="0.3" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1154.83" y="303.5" ></text>
+</g>
+<g >
+<title>__GI___futex_abstimed_wait_cancelable64 (154,168,304 samples, 0.02%)</title><rect x="1151.8" y="325" width="0.3" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="1154.83" y="335.5" ></text>
+</g>
+<g >
+<title>next_utf2unicode (3,416,807,452 samples, 0.52%)</title><rect x="381.8" y="277" width="6.2" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="384.81" y="287.5" ></text>
+</g>
+<g >
+<title>do_futex (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="261" width="5.6" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1167.63" y="271.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (70,552,057 samples, 0.01%)</title><rect x="691.8" y="325" width="0.1" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="694.75" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/System:::identityHashCode (71,549,185 samples, 0.01%)</title><rect x="1151.4" y="293" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1154.45" y="303.5" ></text>
+</g>
+<g >
+<title>UNICODE::as_utf8 (596,566,349 samples, 0.09%)</title><rect x="842.9" y="261" width="1.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="845.89" y="271.5" ></text>
+</g>
+<g >
+<title>ThreadRootsTask::do_it (135,663,576 samples, 0.02%)</title><rect x="1188.2" y="293" width="0.3" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1191.22" y="303.5" ></text>
+</g>
+<g >
+<title>TypeArrayKlass::allocate_common (56,409,925 samples, 0.01%)</title><rect x="1155.0" y="309" width="0.2" height="15.0" fill="rgb(219,219,66)" rx="2" ry="2" />
+<text  x="1158.05" y="319.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (70,498,071 samples, 0.01%)</title><rect x="353.3" y="229" width="0.1" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="356.27" y="239.5" ></text>
+</g>
+<g >
+<title>OldToYoungRootsTask::do_it (4,384,809,874 samples, 0.67%)</title><rect x="1170.7" y="293" width="7.8" height="15.0" fill="rgb(198,198,58)" rx="2" ry="2" />
+<text  x="1173.65" y="303.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor36:::invoke (114,922,101 samples, 0.02%)</title><rect x="779.4" y="341" width="0.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="782.40" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream$BlockDataOutputStream:::drain (9,420,845,191 samples, 1.44%)</title><rect x="917.6" y="325" width="16.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="920.56" y="335.5" ></text>
+</g>
+<g >
+<title>CodeHeap::find_start (70,567,165 samples, 0.01%)</title><rect x="510.6" y="245" width="0.2" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="513.64" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readClass (70,584,392 samples, 0.01%)</title><rect x="282.6" y="341" width="0.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="285.60" y="351.5" ></text>
+</g>
+<g >
+<title>VerifyClassname (704,859,781 samples, 0.11%)</title><rect x="834.4" y="277" width="1.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="837.36" y="287.5" ></text>
+</g>
+<g >
+<title>java_lang_String::equals (4,352,499,032 samples, 0.66%)</title><rect x="1100.6" y="245" width="7.8" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="1103.56" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readArray (565,482,529 samples, 0.09%)</title><rect x="824.9" y="325" width="1.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="827.94" y="335.5" ></text>
+</g>
+<g >
+<title>ObjectStartArray::object_starts_in_range (1,461,023,933 samples, 0.22%)</title><rect x="1175.9" y="261" width="2.6" height="15.0" fill="rgb(193,193,56)" rx="2" ry="2" />
+<text  x="1178.92" y="271.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (88,298,734 samples, 0.01%)</title><rect x="1170.5" y="325" width="0.2" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="1173.49" y="335.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable (2,855,934,297 samples, 0.44%)</title><rect x="1164.6" y="133" width="5.2" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="1167.63" y="143.5" ></text>
+</g>
+<g >
+<title>nmethod::is_zombie (214,649,100 samples, 0.03%)</title><rect x="867.1" y="245" width="0.4" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="870.07" y="255.5" ></text>
+</g>
+<g >
+<title>ObjectSynchronizer::FastHashCode (141,142,966 samples, 0.02%)</title><rect x="978.4" y="277" width="0.3" height="15.0" fill="rgb(193,193,56)" rx="2" ry="2" />
+<text  x="981.43" y="287.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (2,035,871,318 samples, 0.31%)</title><rect x="563.9" y="325" width="3.6" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="566.85" y="335.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (497,960,257 samples, 0.08%)</title><rect x="186.6" y="261" width="0.9" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="189.64" y="271.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (68,979,190 samples, 0.01%)</title><rect x="847.3" y="277" width="0.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="850.30" y="287.5" ></text>
+</g>
+<g >
+<title>CompressedReadStream::read_int_mb (70,869,719 samples, 0.01%)</title><rect x="899.4" y="261" width="0.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="902.35" y="271.5" ></text>
+</g>
+<g >
+<title>java_lang_String::as_utf8_string (70,611,275 samples, 0.01%)</title><rect x="841.4" y="277" width="0.1" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="844.42" y="287.5" ></text>
+</g>
+<g >
+<title>vframeStream::vframeStream (2,381,477,570 samples, 0.36%)</title><rect x="850.2" y="277" width="4.3" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="853.22" y="287.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (70,498,071 samples, 0.01%)</title><rect x="353.3" y="197" width="0.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="356.27" y="207.5" ></text>
+</g>
+<g >
+<title>Lsun/misc/VM:::latestUserDefinedLoader0 (55,626,438,233 samples, 8.49%)</title><rect x="413.3" y="325" width="100.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="416.31" y="335.5" >Lsun/misc/VM..</text>
+</g>
+<g >
+<title>frame::oops_do_internal (135,663,576 samples, 0.02%)</title><rect x="1188.2" y="261" width="0.3" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="1191.22" y="271.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (839,867,270 samples, 0.13%)</title><rect x="933.0" y="309" width="1.5" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="936.01" y="319.5" ></text>
+</g>
+<g >
+<title>JavaCalls::call_virtual (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="245" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="1167.44" y="255.5" ></text>
+</g>
+<g >
+<title>select_task_rq_fair (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="213" width="0.2" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="1173.49" y="223.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="133" width="0.3" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="1191.22" y="143.5" ></text>
+</g>
+<g >
+<title>pthread_cond_init@@GLIBC_2.3.2 (168,390,293 samples, 0.03%)</title><rect x="1188.5" y="261" width="0.3" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1191.46" y="271.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (70,638,852 samples, 0.01%)</title><rect x="643.0" y="245" width="0.1" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="646.00" y="255.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (255,340,489 samples, 0.04%)</title><rect x="426.4" y="293" width="0.5" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="429.42" y="303.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::next (385,555,072 samples, 0.06%)</title><rect x="512.2" y="309" width="0.7" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="515.22" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass$FieldReflector:::setPrimFieldValues (3,696,959,216 samples, 0.56%)</title><rect x="695.9" y="341" width="6.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="698.91" y="351.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (69,531,185 samples, 0.01%)</title><rect x="762.7" y="325" width="0.1" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="765.71" y="335.5" ></text>
+</g>
+<g >
+<title>JvmtiVMObjectAllocEventCollector::~JvmtiVMObjectAllocEventCollector (595,293,183 samples, 0.09%)</title><rect x="1087.1" y="277" width="1.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1090.15" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/File:::isInvalid (68,999,662 samples, 0.01%)</title><rect x="10.1" y="341" width="0.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="13.06" y="351.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (533,273,953 samples, 0.08%)</title><rect x="186.6" y="277" width="0.9" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="189.58" y="287.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/data/TestParent:::equals (140,585,703 samples, 0.02%)</title><rect x="776.0" y="341" width="0.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="779.02" y="351.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor25:::invoke (361,253,275 samples, 0.06%)</title><rect x="778.6" y="341" width="0.6" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="781.56" y="351.5" ></text>
+</g>
+<g >
+<title>Lsun/misc/VM:::latestUserDefinedLoader0 (106,460,001 samples, 0.02%)</title><rect x="776.9" y="341" width="0.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="779.91" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readArray (1,094,453,232 samples, 0.17%)</title><rect x="280.6" y="341" width="2.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="283.63" y="351.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (70,393,686 samples, 0.01%)</title><rect x="691.8" y="277" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="694.75" y="287.5" ></text>
+</g>
+<g >
+<title>VMThread::run (684,557,559 samples, 0.10%)</title><rect x="1188.8" y="309" width="1.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="1191.77" y="319.5" ></text>
+</g>
+<g >
+<title>jshort_arraycopy (696,018,700 samples, 0.11%)</title><rect x="187.6" y="325" width="1.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="190.60" y="335.5" ></text>
+</g>
+<g >
+<title>perf_event_task_tick (317,656,566 samples, 0.05%)</title><rect x="186.8" y="181" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="189.84" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/AbstractStringBuilder:::&lt;init&gt; (747,456,968 samples, 0.11%)</title><rect x="762.9" y="341" width="1.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="765.90" y="351.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (138,676,240 samples, 0.02%)</title><rect x="472.0" y="229" width="0.3" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="475.00" y="239.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (568,243,139 samples, 0.09%)</title><rect x="186.6" y="325" width="1.0" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="189.58" y="335.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (70,187,088 samples, 0.01%)</title><rect x="208.6" y="261" width="0.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="211.61" y="271.5" ></text>
+</g>
+<g >
+<title>Dictionary::find (242,569,293 samples, 0.04%)</title><rect x="832.5" y="197" width="0.4" height="15.0" fill="rgb(205,205,60)" rx="2" ry="2" />
+<text  x="835.46" y="207.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (105,826,089 samples, 0.02%)</title><rect x="842.1" y="261" width="0.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="845.06" y="271.5" ></text>
+</g>
+<g >
+<title>java_lang_String::utf8_length (175,102,569 samples, 0.03%)</title><rect x="392.0" y="293" width="0.3" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="394.96" y="303.5" ></text>
+</g>
+<g >
+<title>itable stub (1,350,679,647 samples, 0.21%)</title><rect x="1155.2" y="341" width="2.4" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1158.15" y="351.5" ></text>
+</g>
+<g >
+<title>Dictionary::find (1,520,347,653 samples, 0.23%)</title><rect x="357.8" y="229" width="2.7" height="15.0" fill="rgb(205,205,60)" rx="2" ry="2" />
+<text  x="360.80" y="239.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/Class:::forName0 (10,563,510,807 samples, 1.61%)</title><rect x="826.1" y="309" width="19.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="829.09" y="319.5" ></text>
+</g>
+<g >
+<title>Atomic::dec (529,352,193 samples, 0.08%)</title><rect x="332.9" y="277" width="1.0" height="15.0" fill="rgb(210,210,63)" rx="2" ry="2" />
+<text  x="335.94" y="287.5" ></text>
+</g>
+<g >
+<title>OopMapSet::oops_do (135,663,576 samples, 0.02%)</title><rect x="1188.2" y="245" width="0.3" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="1191.22" y="255.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::next (70,428,329 samples, 0.01%)</title><rect x="873.3" y="293" width="0.2" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="876.33" y="303.5" ></text>
+</g>
+<g >
+<title>clear_buddies (123,269,133 samples, 0.02%)</title><rect x="1169.8" y="133" width="0.2" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text  x="1172.77" y="143.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readSerialData (8,768,431,999 samples, 1.34%)</title><rect x="900.8" y="325" width="15.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="903.76" y="335.5" ></text>
+</g>
+<g >
+<title>java_lang_String::as_utf8_string (70,897,342 samples, 0.01%)</title><rect x="409.0" y="277" width="0.1" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="411.97" y="287.5" ></text>
+</g>
+<g >
+<title>nmethod::is_nmethod (386,910,737 samples, 0.06%)</title><rect x="485.4" y="261" width="0.7" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="488.43" y="271.5" ></text>
+</g>
+<g >
+<title>JVM_FindClassFromCaller (4,128,699,301 samples, 0.63%)</title><rect x="826.6" y="277" width="7.4" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="829.61" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream$BlockDataOutputStream:::drain (1,936,694,696 samples, 0.30%)</title><rect x="524.4" y="341" width="3.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="527.38" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$HandleTable:::lookupException (671,812,606 samples, 0.10%)</title><rect x="795.9" y="325" width="1.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="798.86" y="335.5" ></text>
+</g>
+<g >
+<title>skip_over_fieldname.constprop.2 (71,727,615 samples, 0.01%)</title><rect x="412.2" y="293" width="0.1" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="415.16" y="303.5" ></text>
+</g>
+<g >
+<title>os::serialize_thread_states (601,534,731 samples, 0.09%)</title><rect x="1188.9" y="261" width="1.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="1191.92" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::getLocalDesc (70,721,388 samples, 0.01%)</title><rect x="703.2" y="341" width="0.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="706.20" y="351.5" ></text>
+</g>
+<g >
+<title>jlong_disjoint_arraycopy (388,293,441 samples, 0.06%)</title><rect x="761.4" y="325" width="0.7" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="764.43" y="335.5" ></text>
+</g>
+<g >
+<title>do_user_addr_fault (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="149" width="0.3" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1191.22" y="159.5" ></text>
+</g>
+<g >
+<title>do_anonymous_page (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="85" width="0.3" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1191.22" y="95.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/Class:::forName0 (47,063,563,533 samples, 7.18%)</title><rect x="328.6" y="325" width="84.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="331.57" y="335.5" >Ljava/lan..</text>
+</g>
+<g >
+<title>VM_Periodic_Tas (168,668,823 samples, 0.03%)</title><rect x="1188.5" y="357" width="0.3" height="15.0" fill="rgb(235,100,100)" rx="2" ry="2" />
+<text  x="1191.46" y="367.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor6:::newInstance (118,404,269 samples, 0.02%)</title><rect x="781.6" y="341" width="0.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="784.58" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/Class:::forName0 (1,413,231,719 samples, 0.22%)</title><rect x="514.4" y="325" width="2.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="517.36" y="335.5" ></text>
+</g>
+<g >
+<title>RegisterMap::RegisterMap (69,159,447 samples, 0.01%)</title><rect x="424.4" y="293" width="0.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="427.36" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/String:::&lt;init&gt; (530,330,392 samples, 0.08%)</title><rect x="764.4" y="341" width="0.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="767.37" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$BlockDataInputStream:::readFully (70,877,422 samples, 0.01%)</title><rect x="14.8" y="341" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="17.85" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readProxyDesc (2,340,017,195 samples, 0.36%)</title><rect x="896.5" y="325" width="4.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="899.55" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$HandleTable:::finish (1,065,351,841 samples, 0.16%)</title><rect x="793.9" y="325" width="1.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="796.88" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readSerialData (3,975,761,568 samples, 0.61%)</title><rect x="516.9" y="341" width="7.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="519.91" y="351.5" ></text>
+</g>
+<g >
+<title>ThreadLocalStorage::is_initialized (70,559,894 samples, 0.01%)</title><rect x="407.4" y="261" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="410.44" y="271.5" ></text>
+</g>
+<g >
+<title>JVM_InternString (69,378,351 samples, 0.01%)</title><rect x="1083.1" y="309" width="0.1" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="1086.06" y="319.5" ></text>
+</g>
+<g >
+<title>nmethod::find_pc_desc_internal (1,091,395,324 samples, 0.17%)</title><rect x="486.7" y="277" width="2.0" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="489.70" y="287.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (70,363,139 samples, 0.01%)</title><rect x="978.9" y="309" width="0.2" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="981.94" y="319.5" ></text>
+</g>
+<g >
+<title>frame::sender (2,194,523,781 samples, 0.33%)</title><rect x="863.5" y="261" width="4.0" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="866.50" y="271.5" ></text>
+</g>
+<g >
+<title>jbyte_arraycopy (105,956,058 samples, 0.02%)</title><rect x="208.7" y="325" width="0.2" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="211.73" y="335.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (383,223,049 samples, 0.06%)</title><rect x="1163.7" y="341" width="0.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1166.74" y="351.5" ></text>
+</g>
+<g >
+<title>perf_adjust_freq_unthr_context (138,676,240 samples, 0.02%)</title><rect x="472.0" y="117" width="0.3" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="475.00" y="127.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFLength (140,754,869 samples, 0.02%)</title><rect x="516.4" y="293" width="0.3" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="519.40" y="303.5" ></text>
+</g>
+<g >
+<title>perf_event_mmap_event (297,719,506 samples, 0.05%)</title><rect x="1188.9" y="133" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1191.92" y="143.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (174,928,464 samples, 0.03%)</title><rect x="1118.1" y="277" width="0.3" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1121.10" y="287.5" ></text>
+</g>
+<g >
+<title>strlen@plt (140,100,647 samples, 0.02%)</title><rect x="412.3" y="293" width="0.2" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="415.29" y="303.5" ></text>
+</g>
+<g >
+<title>ThreadLocalStorage::is_initialized (104,819,476 samples, 0.02%)</title><rect x="1088.0" y="261" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1091.03" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (318,524,727 samples, 0.05%)</title><rect x="1151.3" y="325" width="0.5" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="1154.26" y="335.5" ></text>
+</g>
+<g >
+<title>Monitor::IWait (168,390,293 samples, 0.03%)</title><rect x="1188.5" y="277" width="0.3" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="1191.46" y="287.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/data/TestArray:::equals (704,668,813 samples, 0.11%)</title><rect x="774.4" y="341" width="1.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="777.44" y="351.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::oops_do (102,910,277 samples, 0.02%)</title><rect x="1179.1" y="277" width="0.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="1182.06" y="287.5" ></text>
+</g>
+<g >
+<title>__memmove_sse2_unaligned_erms (248,705,786 samples, 0.04%)</title><rect x="1180.5" y="261" width="0.5" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1183.52" y="271.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor15:::invoke (69,813,916 samples, 0.01%)</title><rect x="777.7" y="341" width="0.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="780.73" y="351.5" ></text>
+</g>
+<g >
+<title>nmethod::get_deopt_original_pc (178,658,960 samples, 0.03%)</title><rect x="440.4" y="277" width="0.4" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="443.45" y="287.5" ></text>
+</g>
+<g >
+<title>OptoRuntime::new_array_nozero_C (91,709,267 samples, 0.01%)</title><rect x="1155.0" y="325" width="0.2" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text  x="1157.99" y="335.5" ></text>
+</g>
+<g >
+<title>Symbol::equals (1,951,351,234 samples, 0.30%)</title><rect x="349.6" y="261" width="3.5" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="352.57" y="271.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (70,498,071 samples, 0.01%)</title><rect x="353.3" y="261" width="0.1" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="356.27" y="271.5" ></text>
+</g>
+<g >
+<title>futex_wait (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="245" width="5.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1167.63" y="255.5" ></text>
+</g>
+<g >
+<title>Symbol::as_C_string (105,922,841 samples, 0.02%)</title><rect x="830.6" y="197" width="0.2" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="833.57" y="207.5" ></text>
+</g>
+<g >
+<title>VM_Thread (685,057,598 samples, 0.10%)</title><rect x="1188.8" y="357" width="1.2" height="15.0" fill="rgb(235,100,100)" rx="2" ry="2" />
+<text  x="1191.77" y="367.5" ></text>
+</g>
+<g >
+<title>nmethod::is_zombie (108,851,321 samples, 0.02%)</title><rect x="440.8" y="277" width="0.2" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="443.77" y="287.5" ></text>
+</g>
+<g >
+<title>PSRootsClosure&lt;false&gt;::do_oop (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="229" width="0.3" height="15.0" fill="rgb(215,215,64)" rx="2" ry="2" />
+<text  x="1191.22" y="239.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::defaultWriteFields (10,224,776,096 samples, 1.56%)</title><rect x="569.5" y="341" width="18.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="572.55" y="351.5" ></text>
+</g>
+<g >
+<title>JVM_LatestUserDefinedLoader (53,593,251,892 samples, 8.18%)</title><rect x="414.4" y="309" width="96.5" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="417.39" y="319.5" >JVM_LatestU..</text>
+</g>
+<g >
+<title>CompressedReadStream::read_int_mb (775,469,451 samples, 0.12%)</title><rect x="418.8" y="293" width="1.4" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="421.79" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readClassDesc (26,448,378,579 samples, 4.04%)</title><rect x="826.0" y="325" width="47.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="829.02" y="335.5" >Ljav..</text>
+</g>
+<g >
+<title>vframeStreamCommon::skip_reflection_related_frames (103,592,743 samples, 0.02%)</title><rect x="873.5" y="293" width="0.1" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="876.46" y="303.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (70,393,686 samples, 0.01%)</title><rect x="691.8" y="293" width="0.1" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="694.75" y="303.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (70,638,852 samples, 0.01%)</title><rect x="643.0" y="229" width="0.1" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="646.00" y="239.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/data/TestWithFinalField:::equals (148,290,448 samples, 0.02%)</title><rect x="1148.5" y="325" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1151.47" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::readNonProxy (24,226,677,880 samples, 3.70%)</title><rect x="1077.2" y="325" width="43.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1080.22" y="335.5" >Ljav..</text>
+</g>
+<g >
+<title>JNIHandles::make_local (1,078,474,394 samples, 0.16%)</title><rect x="334.4" y="277" width="1.9" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="337.40" y="287.5" ></text>
+</g>
+<g >
+<title>VerifyFixClassname (109,657,164 samples, 0.02%)</title><rect x="515.8" y="293" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="518.82" y="303.5" ></text>
+</g>
+<g >
+<title>Lsun/misc/VM:::latestUserDefinedLoader0 (2,232,107,621 samples, 0.34%)</title><rect x="896.7" y="309" width="4.1" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="899.74" y="319.5" ></text>
+</g>
+<g >
+<title>JVM_FindClassFromCaller (497,090,766 samples, 0.08%)</title><rect x="514.5" y="293" width="0.9" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="517.49" y="303.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (106,070,116 samples, 0.02%)</title><rect x="916.0" y="245" width="0.2" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="918.98" y="255.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::next (921,489,662 samples, 0.14%)</title><rect x="898.3" y="277" width="1.6" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="901.27" y="287.5" ></text>
+</g>
+<g >
+<title>task_tick_fair (70,363,139 samples, 0.01%)</title><rect x="978.9" y="165" width="0.2" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="981.94" y="175.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/AbstractStringBuilder:::&lt;init&gt; (4,372,473,111 samples, 0.67%)</title><rect x="1120.8" y="325" width="7.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1123.84" y="335.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (70,577,467 samples, 0.01%)</title><rect x="916.0" y="181" width="0.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="919.04" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$HandleTable:::assign (392,869,698 samples, 0.06%)</title><rect x="793.2" y="325" width="0.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="796.17" y="335.5" ></text>
+</g>
+<g >
+<title>[unknown] (3,257,694,487 samples, 0.50%)</title><rect x="1164.6" y="341" width="5.9" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="1167.63" y="351.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (71,868,468 samples, 0.01%)</title><rect x="510.4" y="181" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="513.44" y="191.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::next (7,547,920,825 samples, 1.15%)</title><rect x="854.5" y="277" width="13.6" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="857.51" y="287.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (103,083,884 samples, 0.02%)</title><rect x="392.9" y="277" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="395.91" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::readNonProxy (14,944,073,112 samples, 2.28%)</title><rect x="735.2" y="341" width="26.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="738.23" y="351.5" >L..</text>
+</g>
+<g >
+<title>frame::is_interpreted_frame (532,807,730 samples, 0.08%)</title><rect x="472.3" y="277" width="1.0" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="475.32" y="287.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (175,137,419 samples, 0.03%)</title><rect x="407.6" y="261" width="0.3" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="410.57" y="271.5" ></text>
+</g>
+<g >
+<title>perf_event_task_tick (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="165" width="0.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1024.90" y="175.5" ></text>
+</g>
+<g >
+<title>VerifyClassname (246,049,755 samples, 0.04%)</title><rect x="515.4" y="293" width="0.4" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="518.38" y="303.5" ></text>
+</g>
+<g >
+<title>CodeHeap::find_start (317,382,428 samples, 0.05%)</title><rect x="439.4" y="261" width="0.6" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="442.43" y="271.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (282,036,888 samples, 0.04%)</title><rect x="1117.6" y="277" width="0.5" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1120.60" y="287.5" ></text>
+</g>
+<g >
+<title>frame::is_interpreted_frame (70,631,250 samples, 0.01%)</title><rect x="847.5" y="277" width="0.1" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="850.48" y="287.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (133,114,692 samples, 0.02%)</title><rect x="1151.8" y="309" width="0.3" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="1154.83" y="319.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (70,393,686 samples, 0.01%)</title><rect x="691.8" y="197" width="0.1" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="694.75" y="207.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (138,676,240 samples, 0.02%)</title><rect x="472.0" y="181" width="0.3" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="475.00" y="191.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_or_fail (2,317,935,874 samples, 0.35%)</title><rect x="829.9" y="245" width="4.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="832.87" y="255.5" ></text>
+</g>
+<g >
+<title>all (655,323,412,387 samples, 100%)</title><rect x="10.0" y="373" width="1180.0" height="15.0" fill="rgb(255,130,130)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (601,534,731 samples, 0.09%)</title><rect x="1188.9" y="213" width="1.1" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1191.92" y="223.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$BlockDataInputStream:::setBlockDataMode (177,348,523 samples, 0.03%)</title><rect x="197.6" y="341" width="0.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="200.55" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readHandle (1,136,540,902 samples, 0.17%)</title><rect x="874.0" y="325" width="2.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="877.02" y="335.5" ></text>
+</g>
+<g >
+<title>VerifyFixClassname (7,964,128,450 samples, 1.22%)</title><rect x="373.6" y="293" width="14.4" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="376.62" y="303.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor2:::newInstance (248,203,359 samples, 0.04%)</title><rect x="780.9" y="341" width="0.4" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="783.89" y="351.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (70,638,852 samples, 0.01%)</title><rect x="643.0" y="293" width="0.1" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="646.00" y="303.5" ></text>
+</g>
+<g >
+<title>nmethod::get_deopt_original_pc (178,921,832 samples, 0.03%)</title><rect x="430.6" y="293" width="0.3" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="433.58" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readProxyDesc (1,868,915,108 samples, 0.29%)</title><rect x="513.5" y="341" width="3.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="516.54" y="351.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (4,831,049,158 samples, 0.74%)</title><rect x="188.9" y="325" width="8.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="191.85" y="335.5" ></text>
+</g>
+<g >
+<title>GC_task_thread# (13,236,770,716 samples, 2.02%)</title><rect x="1164.6" y="357" width="23.9" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="1167.63" y="367.5" >G..</text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/data/TestByteArray:::equals (106,110,770 samples, 0.02%)</title><rect x="775.7" y="341" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="778.70" y="351.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (458,715,597 samples, 0.07%)</title><rect x="186.7" y="229" width="0.8" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="189.71" y="239.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::isInstantiable (141,545,321 samples, 0.02%)</title><rect x="728.9" y="341" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="731.89" y="351.5" ></text>
+</g>
+<g >
+<title>JvmtiVMObjectAllocEventCollector::JvmtiVMObjectAllocEventCollector (138,894,436 samples, 0.02%)</title><rect x="1119.2" y="293" width="0.3" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1122.25" y="303.5" ></text>
+</g>
+<g >
+<title>JavaCalls::call_virtual (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="261" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="1167.44" y="271.5" ></text>
+</g>
+<g >
+<title>do_futex (106,805,663 samples, 0.02%)</title><rect x="1151.8" y="261" width="0.2" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1154.83" y="271.5" ></text>
+</g>
+<g >
+<title>CodeHeap::find_start (105,968,817 samples, 0.02%)</title><rect x="484.2" y="261" width="0.2" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="487.22" y="271.5" ></text>
+</g>
+<g >
+<title>pick_next_task_fair (123,269,133 samples, 0.02%)</title><rect x="1169.8" y="165" width="0.2" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="1172.77" y="175.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (2,333,935,917 samples, 0.36%)</title><rect x="837.2" y="277" width="4.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="840.22" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::readObject (2,219,940,564 samples, 0.34%)</title><rect x="1142.5" y="325" width="4.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1145.48" y="335.5" ></text>
+</g>
+<g >
+<title>InstanceKlass::oop_push_contents (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="197" width="0.3" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="1191.22" y="207.5" ></text>
+</g>
+<g >
+<title>JVM_IHashCode (71,549,185 samples, 0.01%)</title><rect x="1151.4" y="277" width="0.2" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="1154.45" y="287.5" ></text>
+</g>
+<g >
+<title>nmethod::get_deopt_original_pc (176,854,212 samples, 0.03%)</title><rect x="488.7" y="277" width="0.3" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="491.66" y="287.5" ></text>
+</g>
+<g >
+<title>Java_java_lang_Class_forName0 (1,343,268,217 samples, 0.20%)</title><rect x="514.5" y="309" width="2.4" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="517.49" y="319.5" ></text>
+</g>
+<g >
+<title>Java_java_lang_Class_forName0 (10,350,114,080 samples, 1.58%)</title><rect x="826.3" y="293" width="18.7" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="829.34" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/util/ArrayList:::readObject (212,001,304 samples, 0.03%)</title><rect x="1142.0" y="325" width="0.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1145.04" y="335.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (71,868,468 samples, 0.01%)</title><rect x="510.4" y="213" width="0.2" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="513.44" y="223.5" ></text>
+</g>
+<g >
+<title>jshort_arraycopy (174,910,601 samples, 0.03%)</title><rect x="691.9" y="325" width="0.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="694.88" y="335.5" ></text>
+</g>
+<g >
+<title>skip_over_fieldname.constprop.2 (636,407,681 samples, 0.10%)</title><rect x="834.5" y="261" width="1.1" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="837.49" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$PeekInputStream:::read (4,968,664,311 samples, 0.76%)</title><rect x="201.8" y="341" width="9.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="204.82" y="351.5" ></text>
+</g>
+<g >
+<title>Klass::class_loader (141,035,062 samples, 0.02%)</title><rect x="846.5" y="277" width="0.3" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="849.54" y="287.5" ></text>
+</g>
+<g >
+<title>perf_ctx_enable (2,855,934,297 samples, 0.44%)</title><rect x="1164.6" y="149" width="5.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1167.63" y="159.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (70,393,686 samples, 0.01%)</title><rect x="691.8" y="229" width="0.1" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="694.75" y="239.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (568,243,139 samples, 0.09%)</title><rect x="186.6" y="309" width="1.0" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="189.58" y="319.5" ></text>
+</g>
+<g >
+<title>JVM_FindClassFromCaller (19,342,874,617 samples, 2.95%)</title><rect x="331.4" y="293" width="34.9" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="334.44" y="303.5" >JV..</text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (211,740,979 samples, 0.03%)</title><rect x="1085.6" y="277" width="0.4" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="1088.61" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeSerialData (1,096,826,454 samples, 0.17%)</title><rect x="981.9" y="325" width="2.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="984.91" y="335.5" ></text>
+</g>
+<g >
+<title>JVM_LatestUserDefinedLoader (15,502,658,898 samples, 2.37%)</title><rect x="845.2" y="293" width="28.0" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="848.24" y="303.5" >J..</text>
+</g>
+<g >
+<title>resource_allocate_bytes (210,864,936 samples, 0.03%)</title><rect x="1117.1" y="261" width="0.4" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="1120.09" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::lookup (2,322,184,219 samples, 0.35%)</title><rect x="729.1" y="341" width="4.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="732.14" y="351.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (70,363,139 samples, 0.01%)</title><rect x="978.9" y="261" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="981.94" y="271.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (533,273,953 samples, 0.08%)</title><rect x="186.6" y="293" width="0.9" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="189.58" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::lookup (20,469,254,018 samples, 3.12%)</title><rect x="1040.4" y="325" width="36.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1043.36" y="335.5" >Lja..</text>
+</g>
+<g >
+<title>JavaThread::thread_main_inner (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="293" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="1167.44" y="303.5" ></text>
+</g>
+<g >
+<title>perf_adjust_freq_unthr_context (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="149" width="0.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1024.90" y="159.5" ></text>
+</g>
+<g >
+<title>jshort_arraycopy (260,047,106 samples, 0.04%)</title><rect x="1154.1" y="325" width="0.5" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1157.14" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readSerialData (105,429,191 samples, 0.02%)</title><rect x="1151.3" y="309" width="0.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1154.26" y="319.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (71,868,468 samples, 0.01%)</title><rect x="510.4" y="245" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="513.44" y="255.5" ></text>
+</g>
+<g >
+<title>CodeHeap::find_start (2,138,119,323 samples, 0.33%)</title><rect x="480.3" y="245" width="3.9" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="483.30" y="255.5" ></text>
+</g>
+<g >
+<title>JVM_FindClassFromCaller (211,893,583 samples, 0.03%)</title><rect x="329.5" y="309" width="0.4" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="332.52" y="319.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific@@GLIBC_2.34 (145,511,948 samples, 0.02%)</title><rect x="407.9" y="261" width="0.2" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="410.88" y="271.5" ></text>
+</g>
+<g >
+<title>Symbol::equals (2,591,498,120 samples, 0.40%)</title><rect x="336.3" y="277" width="4.7" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="339.34" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::getSuperDesc (246,478,630 samples, 0.04%)</title><rect x="720.1" y="341" width="0.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="723.10" y="351.5" ></text>
+</g>
+<g >
+<title>Handle::Handle (70,719,420 samples, 0.01%)</title><rect x="360.5" y="229" width="0.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="363.53" y="239.5" ></text>
+</g>
+<g >
+<title>__schedule (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="197" width="5.6" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1167.63" y="207.5" ></text>
+</g>
+<g >
+<title>vma_merge (97,004,919 samples, 0.01%)</title><rect x="1189.8" y="149" width="0.2" height="15.0" fill="rgb(226,89,89)" rx="2" ry="2" />
+<text  x="1192.82" y="159.5" ></text>
+</g>
+<g >
+<title>folio_add_lru_vma (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="53" width="0.3" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="1191.22" y="63.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::is_ext_class_loader (1,006,300,796 samples, 0.15%)</title><rect x="424.5" y="293" width="1.8" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="427.48" y="303.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (1,410,354,463 samples, 0.22%)</title><rect x="1159.6" y="341" width="2.5" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1162.55" y="351.5" ></text>
+</g>
+<g >
+<title>perf_adjust_freq_unthr_context (317,656,566 samples, 0.05%)</title><rect x="186.8" y="165" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="189.84" y="175.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (71,868,468 samples, 0.01%)</title><rect x="510.4" y="149" width="0.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="513.44" y="159.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor23:::newInstance (141,381,022 samples, 0.02%)</title><rect x="780.4" y="341" width="0.3" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="783.44" y="351.5" ></text>
+</g>
+<g >
+<title>VMThread::loop (684,557,559 samples, 0.10%)</title><rect x="1188.8" y="293" width="1.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="1191.77" y="303.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/data/TestWithBigDecimal:::equals (70,160,750 samples, 0.01%)</title><rect x="776.8" y="341" width="0.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="779.78" y="351.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (70,651,212 samples, 0.01%)</title><rect x="426.3" y="293" width="0.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="429.29" y="303.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (70,363,139 samples, 0.01%)</title><rect x="978.9" y="229" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="981.94" y="239.5" ></text>
+</g>
+<g >
+<title>UNICODE::utf8_length (70,255,426 samples, 0.01%)</title><rect x="516.5" y="277" width="0.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="519.53" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$HandleTable:::lookupException (176,992,570 samples, 0.03%)</title><rect x="201.5" y="341" width="0.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="204.50" y="351.5" ></text>
+</g>
+<g >
+<title>ObjArrayKlass::array_klass_impl (70,370,271 samples, 0.01%)</title><rect x="832.1" y="213" width="0.2" height="15.0" fill="rgb(193,193,56)" rx="2" ry="2" />
+<text  x="835.15" y="223.5" ></text>
+</g>
+<g >
+<title>java_start (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="325" width="0.2" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text  x="1167.44" y="335.5" ></text>
+</g>
+<g >
+<title>ThreadLocalStorage::is_initialized (105,624,054 samples, 0.02%)</title><rect x="408.8" y="245" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="411.78" y="255.5" ></text>
+</g>
+<g >
+<title>resource_allocate_bytes (70,623,548 samples, 0.01%)</title><rect x="843.8" y="245" width="0.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="846.84" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeString (26,762,051,149 samples, 4.08%)</title><rect x="647.7" y="341" width="48.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="650.72" y="351.5" >Ljav..</text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (209,226,407 samples, 0.03%)</title><rect x="471.9" y="261" width="0.4" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="474.94" y="271.5" ></text>
+</g>
+<g >
+<title>UNICODE::as_utf8 (5,490,437,327 samples, 0.84%)</title><rect x="399.1" y="277" width="9.9" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="402.08" y="287.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific@@GLIBC_2.34 (247,270,864 samples, 0.04%)</title><rect x="1118.8" y="277" width="0.4" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1121.80" y="287.5" ></text>
+</g>
+<g >
+<title>FieldType::get_array_info (1,055,029,819 samples, 0.16%)</title><rect x="830.2" y="213" width="1.9" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="833.19" y="223.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (69,935,530 samples, 0.01%)</title><rect x="426.9" y="293" width="0.1" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="429.88" y="303.5" ></text>
+</g>
+<g >
+<title>Interpreter (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="197" width="0.2" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="1167.44" y="207.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="309" width="5.6" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="1167.63" y="319.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (1,452,764,436 samples, 0.22%)</title><rect x="643.3" y="325" width="2.6" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="646.32" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (69,837,316 samples, 0.01%)</title><rect x="1114.8" y="245" width="0.2" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="1117.83" y="255.5" ></text>
+</g>
+<g >
+<title>JVM_LatestUserDefinedLoader (2,126,083,777 samples, 0.32%)</title><rect x="896.7" y="293" width="3.9" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="899.74" y="303.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (70,577,467 samples, 0.01%)</title><rect x="916.0" y="213" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="919.04" y="223.5" ></text>
+</g>
+<g >
+<title>Ljava/util/HashMap:::resize (463,275,045 samples, 0.07%)</title><rect x="1146.5" y="325" width="0.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1149.48" y="335.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (71,868,468 samples, 0.01%)</title><rect x="510.4" y="229" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="513.44" y="239.5" ></text>
+</g>
+<g >
+<title>JVM_IHashCode (251,097,060 samples, 0.04%)</title><rect x="978.3" y="293" width="0.4" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="981.30" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/util/AbstractList:::equals (255,077,365 samples, 0.04%)</title><rect x="765.7" y="341" width="0.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="768.71" y="351.5" ></text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (140,829,200 samples, 0.02%)</title><rect x="398.0" y="277" width="0.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="400.96" y="287.5" ></text>
+</g>
+<g >
+<title>Java_java_lang_String_intern (141,565,700 samples, 0.02%)</title><rect x="1083.2" y="309" width="0.3" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="1086.25" y="319.5" ></text>
+</g>
+<g >
+<title>do_mprotect_pkey (601,196,140 samples, 0.09%)</title><rect x="1188.9" y="181" width="1.1" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1191.92" y="191.5" ></text>
+</g>
+<g >
+<title>update_process_times (71,868,468 samples, 0.01%)</title><rect x="510.4" y="165" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="513.44" y="175.5" ></text>
+</g>
+<g >
+<title>VerifyClassname (3,343,954,593 samples, 0.51%)</title><rect x="367.6" y="293" width="6.0" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="370.60" y="303.5" ></text>
+</g>
+<g >
+<title>pthread_cond_signal@@GLIBC_2.3.2 (88,298,734 samples, 0.01%)</title><rect x="1170.5" y="341" width="0.2" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1173.49" y="351.5" ></text>
+</g>
+<g >
+<title>UNICODE::utf8_length (106,448,913 samples, 0.02%)</title><rect x="367.4" y="293" width="0.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="370.41" y="303.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::skip_reflection_related_frames (2,804,574,063 samples, 0.43%)</title><rect x="868.1" y="277" width="5.1" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="871.10" y="287.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (70,393,686 samples, 0.01%)</title><rect x="691.8" y="261" width="0.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="694.75" y="271.5" ></text>
+</g>
+<g >
+<title>Handle::Handle (105,815,477 samples, 0.02%)</title><rect x="334.0" y="277" width="0.1" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="336.96" y="287.5" ></text>
+</g>
+<g >
+<title>folio_add_lru (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="37" width="0.3" height="15.0" fill="rgb(249,122,122)" rx="2" ry="2" />
+<text  x="1191.22" y="47.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeSerialData (988,920,431 samples, 0.15%)</title><rect x="645.9" y="341" width="1.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="648.94" y="351.5" ></text>
+</g>
+<g >
+<title>CodeCache::find_blob (211,798,704 samples, 0.03%)</title><rect x="467.7" y="277" width="0.4" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="470.67" y="287.5" ></text>
+</g>
+<g >
+<title>PSPromotionManager::copy_to_survivor_space&lt;false&gt; (391,589,431 samples, 0.06%)</title><rect x="1179.2" y="261" width="0.8" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="1182.25" y="271.5" ></text>
+</g>
+<g >
+<title>thread_entry (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="277" width="0.2" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="1167.44" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::getReflector (5,424,851,315 samples, 0.83%)</title><rect x="710.3" y="341" width="9.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="713.33" y="351.5" ></text>
+</g>
+<g >
+<title>Java_sun_misc_VM_latestUserDefinedLoader0 (106,482,598 samples, 0.02%)</title><rect x="328.4" y="325" width="0.2" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="331.38" y="335.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (70,363,139 samples, 0.01%)</title><rect x="978.9" y="181" width="0.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="981.94" y="191.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="261" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1024.90" y="271.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (1,873,666,410 samples, 0.29%)</title><rect x="388.5" y="293" width="3.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="391.46" y="303.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (70,498,071 samples, 0.01%)</title><rect x="353.3" y="245" width="0.1" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="356.27" y="255.5" ></text>
+</g>
+<g >
+<title>account_user_time (70,444,209 samples, 0.01%)</title><rect x="186.7" y="181" width="0.1" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="189.71" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readClassDesc (1,109,366,003 samples, 0.17%)</title><rect x="282.7" y="341" width="2.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="285.72" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::defaultReadFields (6,106,863,301 samples, 0.93%)</title><rect x="813.7" y="325" width="11.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="816.69" y="335.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFRegion (6,819,201,811 samples, 1.04%)</title><rect x="396.8" y="293" width="12.3" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="399.82" y="303.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::skip_reflection_related_frames (70,710,430 samples, 0.01%)</title><rect x="900.6" y="293" width="0.2" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="903.63" y="303.5" ></text>
+</g>
+<g >
+<title>perf_iterate_ctx (297,719,506 samples, 0.05%)</title><rect x="1188.9" y="101" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1191.92" y="111.5" ></text>
+</g>
+<g >
+<title>java_lang_String::as_utf8_string (71,614,445 samples, 0.01%)</title><rect x="391.8" y="293" width="0.2" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="394.84" y="303.5" ></text>
+</g>
+<g >
+<title>BenchmarkThread (641,231,885,048 samples, 97.85%)</title><rect x="10.0" y="357" width="1154.6" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >BenchmarkThread</text>
+</g>
+<g >
+<title>__mprotect (601,534,731 samples, 0.09%)</title><rect x="1188.9" y="245" width="1.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1191.92" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass$FieldReflector:::setPrimFieldValues (1,025,458,180 samples, 0.16%)</title><rect x="1027.0" y="325" width="1.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1030.04" y="335.5" ></text>
+</g>
+<g >
+<title>Handle::Handle (318,681,476 samples, 0.05%)</title><rect x="1090.0" y="261" width="0.6" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="1093.00" y="271.5" ></text>
+</g>
+<g >
+<title>SpinPause (3,905,773,023 samples, 0.60%)</title><rect x="1181.2" y="277" width="7.0" height="15.0" fill="rgb(239,108,108)" rx="2" ry="2" />
+<text  x="1184.19" y="287.5" ></text>
+</g>
+<g >
+<title>jshort_arraycopy (176,428,235 samples, 0.03%)</title><rect x="1136.6" y="309" width="0.4" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1139.65" y="319.5" ></text>
+</g>
+<g >
+<title>intel_pmu_enable_all (2,855,934,297 samples, 0.44%)</title><rect x="1164.6" y="117" width="5.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="1167.63" y="127.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/String:::&lt;init&gt; (6,617,986,410 samples, 1.01%)</title><rect x="1129.7" y="325" width="12.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1132.74" y="335.5" ></text>
+</g>
+<g >
+<title>nmethod::is_nmethod (282,360,108 samples, 0.04%)</title><rect x="849.6" y="277" width="0.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="852.65" y="287.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (209,226,407 samples, 0.03%)</title><rect x="471.9" y="277" width="0.4" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="474.94" y="287.5" ></text>
+</g>
+<g >
+<title>nmethod::is_zombie (317,757,922 samples, 0.05%)</title><rect x="486.1" y="261" width="0.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="489.12" y="271.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_instance_class_or_null (3,077,503,123 samples, 0.47%)</title><rect x="355.4" y="245" width="5.5" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="358.37" y="255.5" ></text>
+</g>
+<g >
+<title>java_lang_String::utf8_length (173,980,386 samples, 0.03%)</title><rect x="396.5" y="277" width="0.3" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="399.51" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeOrdinaryObject (17,852,166,177 samples, 2.72%)</title><rect x="613.8" y="341" width="32.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="616.79" y="351.5" >Lj..</text>
+</g>
+<g >
+<title>Klass::is_klass (2,458,626,664 samples, 0.38%)</title><rect x="781.9" y="325" width="4.4" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="784.86" y="335.5" ></text>
+</g>
+<g >
+<title>StringTable::intern (16,243,170,134 samples, 2.48%)</title><rect x="1088.2" y="277" width="29.3" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="1091.22" y="287.5" >St..</text>
+</g>
+<g >
+<title>CodeCache::find_blob (70,646,566 samples, 0.01%)</title><rect x="899.6" y="245" width="0.1" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="902.61" y="255.5" ></text>
+</g>
+<g >
+<title>UNICODE::as_utf8 (70,694,154 samples, 0.01%)</title><rect x="516.8" y="277" width="0.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="519.78" y="287.5" ></text>
+</g>
+<g >
+<title>nmethod::get_deopt_original_pc (566,545,269 samples, 0.09%)</title><rect x="484.4" y="261" width="1.0" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="487.41" y="271.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/data/TestProxy:::equals (72,587,032 samples, 0.01%)</title><rect x="776.6" y="341" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="779.65" y="351.5" ></text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (183,509,438 samples, 0.03%)</title><rect x="414.1" y="309" width="0.3" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="417.06" y="319.5" ></text>
+</g>
+<g >
+<title>Klass::class_loader (596,502,851 samples, 0.09%)</title><rect x="510.9" y="309" width="1.1" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="513.89" y="319.5" ></text>
+</g>
+<g >
+<title>frame::sender (176,083,005 samples, 0.03%)</title><rect x="899.5" y="261" width="0.3" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="902.48" y="271.5" ></text>
+</g>
+<g >
+<title>arrayof_jbyte_fill (105,911,064 samples, 0.02%)</title><rect x="824.8" y="309" width="0.1" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text  x="827.75" y="319.5" ></text>
+</g>
+<g >
+<title>nmethod::get_deopt_original_pc (214,189,396 samples, 0.03%)</title><rect x="866.3" y="245" width="0.4" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="869.30" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/util/ArrayList:::readObject (1,658,366,696 samples, 0.25%)</title><rect x="766.2" y="341" width="3.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="769.17" y="351.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (70,550,011 samples, 0.01%)</title><rect x="765.5" y="325" width="0.1" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="768.46" y="335.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (120,012,489 samples, 0.02%)</title><rect x="1021.9" y="309" width="0.2" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="1024.90" y="319.5" ></text>
+</g>
+<g >
+<title>JavaFrameAnchor::make_walkable (73,110,051 samples, 0.01%)</title><rect x="421.4" y="293" width="0.1" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="424.39" y="303.5" ></text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (106,026,185 samples, 0.02%)</title><rect x="331.2" y="293" width="0.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="334.24" y="303.5" ></text>
+</g>
+<g >
+<title>jbyte_arraycopy (1,094,783,873 samples, 0.17%)</title><rect x="1157.6" y="341" width="2.0" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1160.58" y="351.5" ></text>
+</g>
+<g >
+<title>perf_event_task_tick (71,868,468 samples, 0.01%)</title><rect x="510.4" y="133" width="0.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="513.44" y="143.5" ></text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (77,382,297 samples, 0.01%)</title><rect x="826.4" y="277" width="0.1" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="829.41" y="287.5" ></text>
+</g>
+<g >
+<title>nmethod::is_nmethod (335,248,534 samples, 0.05%)</title><rect x="489.0" y="277" width="0.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="491.98" y="287.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (458,412,662 samples, 0.07%)</title><rect x="1153.0" y="325" width="0.8" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1156.00" y="335.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (174,798,125 samples, 0.03%)</title><rect x="516.0" y="293" width="0.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="519.02" y="303.5" ></text>
+</g>
+<g >
+<title>jlong_disjoint_arraycopy (531,542,667 samples, 0.08%)</title><rect x="1119.9" y="309" width="0.9" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1122.89" y="319.5" ></text>
+</g>
+<g >
+<title>jlong_disjoint_arraycopy (175,929,859 samples, 0.03%)</title><rect x="1162.1" y="341" width="0.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1165.09" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::newInstance (1,055,927,863 samples, 0.16%)</title><rect x="733.3" y="341" width="1.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="736.32" y="351.5" ></text>
+</g>
+<g >
+<title>ResourceMark::reset_to_mark (70,648,977 samples, 0.01%)</title><rect x="366.3" y="293" width="0.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="369.27" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::hasReadResolveMethod (707,018,585 samples, 0.11%)</title><rect x="1036.8" y="325" width="1.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1039.80" y="335.5" ></text>
+</g>
+<g >
+<title>frame::sender (70,811,390 samples, 0.01%)</title><rect x="873.0" y="261" width="0.2" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="876.02" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream$BlockDataOutputStream:::writeBlockHeader (1,127,311,374 samples, 0.17%)</title><rect x="567.5" y="341" width="2.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="570.52" y="351.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (70,363,139 samples, 0.01%)</title><rect x="978.9" y="213" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="981.94" y="223.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeObject0 (71,549,185 samples, 0.01%)</title><rect x="1151.4" y="309" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1154.45" y="319.5" ></text>
+</g>
+<g >
+<title>VerifyFixClassname (70,855,551 samples, 0.01%)</title><rect x="412.6" y="309" width="0.1" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="415.61" y="319.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFRegion (70,102,769 samples, 0.01%)</title><rect x="413.2" y="309" width="0.1" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="416.19" y="319.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (105,539,262 samples, 0.02%)</title><rect x="591.5" y="325" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="594.51" y="335.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (1,021,598,918 samples, 0.16%)</title><rect x="208.9" y="325" width="1.9" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="211.93" y="335.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (2,593,002,338 samples, 0.40%)</title><rect x="1022.4" y="309" width="4.6" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1025.37" y="319.5" ></text>
+</g>
+<g >
+<title>Klass::is_subclass_of (1,387,690,113 samples, 0.21%)</title><rect x="870.5" y="261" width="2.5" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="873.52" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeClassDesc (283,144,176 samples, 0.04%)</title><rect x="965.1" y="325" width="0.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="968.13" y="335.5" ></text>
+</g>
+<g >
+<title>jshort_arraycopy (140,564,295 samples, 0.02%)</title><rect x="1022.1" y="309" width="0.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1025.11" y="319.5" ></text>
+</g>
+<g >
+<title>lru_cache_add_inactive_or_unevictable (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="69" width="0.3" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text  x="1191.22" y="79.5" ></text>
+</g>
+<g >
+<title>Symbol::equals (245,493,530 samples, 0.04%)</title><rect x="829.3" y="245" width="0.4" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="832.30" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$PeekInputStream:::read (142,356,312 samples, 0.02%)</title><rect x="797.1" y="325" width="0.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="800.07" y="335.5" ></text>
+</g>
+<g >
+<title>SymbolTable::lookup (6,880,789,494 samples, 1.05%)</title><rect x="341.0" y="277" width="12.4" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="344.01" y="287.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (70,498,071 samples, 0.01%)</title><rect x="353.3" y="165" width="0.1" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="356.27" y="175.5" ></text>
+</g>
+<g >
+<title>vm_stat_account (206,094,131 samples, 0.03%)</title><rect x="1189.5" y="149" width="0.3" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="1192.45" y="159.5" ></text>
+</g>
+<g >
+<title>Symbol::equals (141,950,298 samples, 0.02%)</title><rect x="831.8" y="181" width="0.2" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="834.77" y="191.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::isInstantiable (1,057,876,991 samples, 0.16%)</title><rect x="782.8" y="293" width="1.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="785.83" y="303.5" ></text>
+</g>
+<g >
+<title>account_process_tick (70,444,209 samples, 0.01%)</title><rect x="186.7" y="197" width="0.1" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="189.71" y="207.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::forClass (779,025,068 samples, 0.12%)</title><rect x="1030.4" y="325" width="1.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1033.40" y="335.5" ></text>
+</g>
+<g >
+<title>perf_iterate_sb (297,719,506 samples, 0.05%)</title><rect x="1188.9" y="117" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1191.92" y="127.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (212,823,625 samples, 0.03%)</title><rect x="353.9" y="277" width="0.3" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="356.86" y="287.5" ></text>
+</g>
+<g >
+<title>update_process_times (138,676,240 samples, 0.02%)</title><rect x="472.0" y="165" width="0.3" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="475.00" y="175.5" ></text>
+</g>
+<g >
+<title>prepare_task_switch (134,614,445 samples, 0.02%)</title><rect x="1170.0" y="181" width="0.2" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="1172.99" y="191.5" ></text>
+</g>
+<g >
+<title>futex_wake (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="261" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1173.49" y="271.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (177,187,295 samples, 0.03%)</title><rect x="1039.3" y="309" width="0.4" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1042.35" y="319.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_instance_class_or_null (311,833,261 samples, 0.05%)</title><rect x="832.3" y="213" width="0.6" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="835.34" y="223.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="277" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1024.90" y="287.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (71,868,468 samples, 0.01%)</title><rect x="510.4" y="197" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="513.44" y="207.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/String:::getChars (141,001,636 samples, 0.02%)</title><rect x="765.3" y="341" width="0.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="768.33" y="351.5" ></text>
+</g>
+<g >
+<title>ThreadLocalStorage::is_initialized (70,652,645 samples, 0.01%)</title><rect x="1117.5" y="277" width="0.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1120.47" y="287.5" ></text>
+</g>
+<g >
+<title>skip_over_fieldname.constprop.2 (3,123,264,716 samples, 0.48%)</title><rect x="368.0" y="277" width="5.6" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="371.00" y="287.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (458,715,597 samples, 0.07%)</title><rect x="186.7" y="245" width="0.8" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="189.71" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$PeekInputStream:::readFully (29,147,285,707 samples, 4.45%)</title><rect x="210.8" y="341" width="52.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="213.76" y="351.5" >Ljava..</text>
+</g>
+<g >
+<title>jshort_arraycopy (110,717,334 samples, 0.02%)</title><rect x="591.3" y="325" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="594.31" y="335.5" ></text>
+</g>
+<g >
+<title>[libjvm.so] (211,775,488 samples, 0.03%)</title><rect x="1118.4" y="277" width="0.4" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="1121.42" y="287.5" ></text>
+</g>
+<g >
+<title>frame::is_interpreted_frame (211,561,693 samples, 0.03%)</title><rect x="427.0" y="293" width="0.4" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="430.00" y="303.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (388,271,388 samples, 0.06%)</title><rect x="186.8" y="197" width="0.7" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="189.84" y="207.5" ></text>
+</g>
+<g >
+<title>schedule (106,805,663 samples, 0.02%)</title><rect x="1151.8" y="213" width="0.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="1154.83" y="223.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_or_null (282,067,325 samples, 0.04%)</title><rect x="833.5" y="229" width="0.5" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="836.54" y="239.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="229" width="0.2" height="15.0" fill="rgb(237,105,105)" rx="2" ry="2" />
+<text  x="1173.49" y="239.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="229" width="5.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1167.63" y="239.5" ></text>
+</g>
+<g >
+<title>available_idle_cpu (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="181" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1173.49" y="191.5" ></text>
+</g>
+<g >
+<title>UNICODE::utf8_length (1,216,631,071 samples, 0.19%)</title><rect x="394.3" y="277" width="2.2" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="397.31" y="287.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (106,070,116 samples, 0.02%)</title><rect x="916.0" y="293" width="0.2" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="918.98" y="303.5" ></text>
+</g>
+<g >
+<title>java_start (684,557,559 samples, 0.10%)</title><rect x="1188.8" y="325" width="1.2" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text  x="1191.77" y="335.5" ></text>
+</g>
+<g >
+<title>PSScavengeKlassClosure::do_klass (178,346,493 samples, 0.03%)</title><rect x="1178.7" y="277" width="0.4" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="1181.74" y="287.5" ></text>
+</g>
+<g >
+<title>Dictionary::oops_do (102,910,277 samples, 0.02%)</title><rect x="1179.1" y="261" width="0.1" height="15.0" fill="rgb(205,205,60)" rx="2" ry="2" />
+<text  x="1182.06" y="271.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFLength (2,031,571,386 samples, 0.31%)</title><rect x="393.2" y="293" width="3.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="396.16" y="303.5" ></text>
+</g>
+<g >
+<title>Klass::is_subclass_of (1,047,601,484 samples, 0.16%)</title><rect x="422.5" y="293" width="1.9" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="425.47" y="303.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFRegion (773,381,278 samples, 0.12%)</title><rect x="842.6" y="277" width="1.4" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="845.63" y="287.5" ></text>
+</g>
+<g >
+<title>update_process_times (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="197" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="1024.90" y="207.5" ></text>
+</g>
+<g >
+<title>frame::sender (512,554,458 samples, 0.08%)</title><rect x="427.4" y="293" width="0.9" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="430.39" y="303.5" ></text>
+</g>
+<g >
+<title>asm_exc_page_fault (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="181" width="0.3" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="1191.22" y="191.5" ></text>
+</g>
+<g >
+<title>StealTask::do_it (4,980,923,992 samples, 0.76%)</title><rect x="1179.2" y="293" width="9.0" height="15.0" fill="rgb(213,213,63)" rx="2" ry="2" />
+<text  x="1182.25" y="303.5" ></text>
+</g>
+<g >
+<title>CodeCache::find_blob (529,003,123 samples, 0.08%)</title><rect x="439.1" y="277" width="0.9" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="442.05" y="287.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="181" width="0.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="1024.90" y="191.5" ></text>
+</g>
+<g >
+<title>futex_wait (106,805,663 samples, 0.02%)</title><rect x="1151.8" y="245" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1154.83" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::checkInitialized (387,098,696 samples, 0.06%)</title><rect x="1029.7" y="325" width="0.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1032.71" y="335.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific@@GLIBC_2.34 (479,645,866 samples, 0.07%)</title><rect x="1115.0" y="245" width="0.8" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1117.96" y="255.5" ></text>
+</g>
+<g >
+<title>Symbol::equals (248,426,599 samples, 0.04%)</title><rect x="827.1" y="261" width="0.4" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="830.06" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeObject0 (7,460,378,822 samples, 1.14%)</title><rect x="965.6" y="325" width="13.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="968.64" y="335.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (70,363,139 samples, 0.01%)</title><rect x="978.9" y="277" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="981.94" y="287.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (71,379,221 samples, 0.01%)</title><rect x="841.8" y="261" width="0.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="844.80" y="271.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (70,638,852 samples, 0.01%)</title><rect x="643.0" y="261" width="0.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="646.00" y="271.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (120,012,489 samples, 0.02%)</title><rect x="1021.9" y="293" width="0.2" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="1024.90" y="303.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (71,868,468 samples, 0.01%)</title><rect x="510.4" y="277" width="0.2" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="513.44" y="287.5" ></text>
+</g>
+<g >
+<title>checkcast_arraycopy (212,259,767 samples, 0.03%)</title><rect x="916.2" y="309" width="0.3" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text  x="919.17" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$BlockDataInputStream:::setBlockDataMode (747,198,494 samples, 0.11%)</title><rect x="791.8" y="325" width="1.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="794.82" y="335.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor13:::newInstance (138,297,614 samples, 0.02%)</title><rect x="780.0" y="341" width="0.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="782.99" y="351.5" ></text>
+</g>
+<g >
+<title>Atomic::inc (70,623,973 samples, 0.01%)</title><rect x="831.6" y="181" width="0.2" height="15.0" fill="rgb(210,210,63)" rx="2" ry="2" />
+<text  x="834.64" y="191.5" ></text>
+</g>
+<g >
+<title>SafepointSynchronize::begin (684,557,559 samples, 0.10%)</title><rect x="1188.8" y="277" width="1.2" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="1191.77" y="287.5" ></text>
+</g>
+<g >
+<title>pthread_cond_wait@@GLIBC_2.3.2 (143,657,614 samples, 0.02%)</title><rect x="1170.2" y="325" width="0.3" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1173.24" y="335.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="165" width="0.3" height="15.0" fill="rgb(238,106,106)" rx="2" ry="2" />
+<text  x="1191.22" y="175.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeClassDesc (1,509,181,829 samples, 0.23%)</title><rect x="589.0" y="341" width="2.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="591.98" y="351.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (138,676,240 samples, 0.02%)</title><rect x="472.0" y="149" width="0.3" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="475.00" y="159.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="213" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="1024.90" y="223.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor2:::newInstance (106,994,556 samples, 0.02%)</title><rect x="1150.6" y="325" width="0.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="1153.62" y="335.5" ></text>
+</g>
+<g >
+<title>resource_allocate_bytes (458,277,454 samples, 0.07%)</title><rect x="408.1" y="261" width="0.9" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="411.14" y="271.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::getSuperDesc (216,055,168 samples, 0.03%)</title><rect x="1036.4" y="325" width="0.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1039.41" y="335.5" ></text>
+</g>
+<g >
+<title>pick_next_task (123,269,133 samples, 0.02%)</title><rect x="1169.8" y="181" width="0.2" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="1172.77" y="191.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFRegion (139,586,947 samples, 0.02%)</title><rect x="516.7" y="293" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="519.65" y="303.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,458,626,664 samples, 0.38%)</title><rect x="781.9" y="309" width="4.4" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="784.86" y="319.5" ></text>
+</g>
+<g >
+<title>GCTaskThread::run (9,890,777,495 samples, 1.51%)</title><rect x="1170.7" y="309" width="17.8" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text  x="1173.65" y="319.5" ></text>
+</g>
+<g >
+<title>SymbolTable::lookup (143,532,759 samples, 0.02%)</title><rect x="515.0" y="277" width="0.3" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="518.00" y="287.5" ></text>
+</g>
+<g >
+<title>schedule (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="213" width="5.6" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="1167.63" y="223.5" ></text>
+</g>
+<g >
+<title>nmethod::get_deopt_original_pc (77,728,204 samples, 0.01%)</title><rect x="854.2" y="261" width="0.2" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="857.24" y="271.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::next (27,000,159,019 samples, 4.12%)</title><rect x="441.0" y="293" width="48.6" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="443.97" y="303.5" >vfra..</text>
+</g>
+<g >
+<title>Klass::is_subclass_of (243,483,283 samples, 0.04%)</title><rect x="846.8" y="277" width="0.4" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="849.79" y="287.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (70,470,856 samples, 0.01%)</title><rect x="1157.5" y="309" width="0.1" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="1160.46" y="319.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor18:::invoke (507,052,621 samples, 0.08%)</title><rect x="1148.7" y="325" width="1.0" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="1151.74" y="335.5" ></text>
+</g>
+<g >
+<title>resource_allocate_bytes (599,149,423 samples, 0.09%)</title><rect x="1115.8" y="245" width="1.1" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="1118.82" y="255.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="117" width="0.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1191.22" y="127.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (70,638,852 samples, 0.01%)</title><rect x="643.0" y="309" width="0.1" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="646.00" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeString (23,962,957,796 samples, 3.66%)</title><rect x="983.9" y="325" width="43.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="986.89" y="335.5" >Ljav..</text>
+</g>
+<g >
+<title>tick_sched_timer (106,070,116 samples, 0.02%)</title><rect x="916.0" y="229" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="918.98" y="239.5" ></text>
+</g>
+<g >
+<title>jbyte_arraycopy (390,917,793 samples, 0.06%)</title><rect x="1152.3" y="325" width="0.7" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1155.29" y="335.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::skip_reflection_related_frames (314,855,116 samples, 0.05%)</title><rect x="512.9" y="309" width="0.6" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="515.91" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::initNonProxy (887,011,053 samples, 0.14%)</title><rect x="1038.1" y="325" width="1.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1041.07" y="335.5" ></text>
+</g>
+<g >
+<title>start_thread (168,390,293 samples, 0.03%)</title><rect x="1188.5" y="341" width="0.3" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1191.46" y="351.5" ></text>
+</g>
+<g >
+<title>perf_event_context_sched_out (134,614,445 samples, 0.02%)</title><rect x="1170.0" y="149" width="0.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1172.99" y="159.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::getPrimFieldValues (1,133,995,961 samples, 0.17%)</title><rect x="1031.9" y="325" width="2.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1034.87" y="335.5" ></text>
+</g>
+<g >
+<title>update_process_times (458,715,597 samples, 0.07%)</title><rect x="186.7" y="213" width="0.8" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="189.71" y="223.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/data/TestPayload:::equals (209,963,736 samples, 0.03%)</title><rect x="776.3" y="341" width="0.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="779.27" y="351.5" ></text>
+</g>
+<g >
+<title>vframeStreamCommon::skip_reflection_related_frames (11,831,972,686 samples, 1.81%)</title><rect x="489.6" y="293" width="21.3" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="492.58" y="303.5" >v..</text>
+</g>
+<g >
+<title>java_lang_String::as_unicode_string (4,725,330,231 samples, 0.72%)</title><rect x="1108.4" y="261" width="8.5" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="1111.39" y="271.5" ></text>
+</g>
+<g >
+<title>perf_event_task_tick (138,676,240 samples, 0.02%)</title><rect x="472.0" y="133" width="0.3" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="475.00" y="143.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::getPrimFieldValues (3,887,460,407 samples, 0.59%)</title><rect x="703.3" y="341" width="7.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="706.33" y="351.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (70,552,057 samples, 0.01%)</title><rect x="691.8" y="309" width="0.1" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="694.75" y="319.5" ></text>
+</g>
+<g >
+<title>ParallelTaskTerminator::offer_termination (121,116,235 samples, 0.02%)</title><rect x="1181.0" y="277" width="0.2" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="1183.97" y="287.5" ></text>
+</g>
+<g >
+<title>mprotect_fixup (601,031,457 samples, 0.09%)</title><rect x="1188.9" y="165" width="1.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1191.92" y="175.5" ></text>
+</g>
+<g >
+<title>JNIHandles::make_local (316,282,875 samples, 0.05%)</title><rect x="420.8" y="293" width="0.6" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="423.82" y="303.5" ></text>
+</g>
+<g >
+<title>nmethod::is_nmethod (211,289,051 samples, 0.03%)</title><rect x="866.7" y="245" width="0.4" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="869.69" y="255.5" ></text>
+</g>
+<g >
+<title>skip_over_fieldname.constprop.2 (71,068,064 samples, 0.01%)</title><rect x="844.8" y="277" width="0.1" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="847.79" y="287.5" ></text>
+</g>
+<g >
+<title>java_start (9,890,777,495 samples, 1.51%)</title><rect x="1170.7" y="325" width="17.8" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text  x="1173.65" y="335.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor10:::invoke (283,093,393 samples, 0.04%)</title><rect x="777.2" y="341" width="0.5" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="780.22" y="351.5" ></text>
+</g>
+<g >
+<title>Symbol::increment_refcount (105,894,568 samples, 0.02%)</title><rect x="353.1" y="261" width="0.2" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="356.08" y="271.5" ></text>
+</g>
+<g >
+<title>jbyte_arraycopy (282,758,503 samples, 0.04%)</title><rect x="948.5" y="309" width="0.5" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="951.51" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::handleReset (105,911,064 samples, 0.02%)</title><rect x="824.8" y="325" width="0.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="827.75" y="335.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (70,187,088 samples, 0.01%)</title><rect x="208.6" y="325" width="0.1" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="211.61" y="335.5" ></text>
+</g>
+<g >
+<title>jlong_disjoint_arraycopy (176,550,346 samples, 0.03%)</title><rect x="1153.8" y="325" width="0.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1156.82" y="335.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific@@GLIBC_2.34 (214,347,974 samples, 0.03%)</title><rect x="432.7" y="293" width="0.4" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="435.68" y="303.5" ></text>
+</g>
+<g >
+<title>StringTable::intern (9,895,952,407 samples, 1.51%)</title><rect x="1090.6" y="261" width="17.8" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="1093.57" y="271.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (2,604,804,091 samples, 0.40%)</title><rect x="1137.0" y="309" width="4.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1139.96" y="319.5" ></text>
+</g>
+<g >
+<title>find_class_from_class_loader (2,390,246,970 samples, 0.36%)</title><rect x="829.7" y="261" width="4.3" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="832.74" y="271.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/Main:::serialize (394,326,606 samples, 0.06%)</title><rect x="1147.3" y="325" width="0.7" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1150.31" y="335.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor37:::newInstance (69,725,414 samples, 0.01%)</title><rect x="781.4" y="341" width="0.1" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="784.40" y="351.5" ></text>
+</g>
+<g >
+<title>PSPromotionManager::copy_to_survivor_space&lt;false&gt; (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="213" width="0.3" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="1191.22" y="223.5" ></text>
+</g>
+<g >
+<title>JavaThread::run (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="309" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="1167.44" y="319.5" ></text>
+</g>
+<g >
+<title>SymbolTable::lookup (665,872,410 samples, 0.10%)</title><rect x="830.8" y="197" width="1.2" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="833.82" y="207.5" ></text>
+</g>
+<g >
+<title>Monitor::wait (168,390,293 samples, 0.03%)</title><rect x="1188.5" y="293" width="0.3" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="1191.46" y="303.5" ></text>
+</g>
+<g >
+<title>Handle::Handle (211,164,438 samples, 0.03%)</title><rect x="420.2" y="293" width="0.4" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="423.18" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::checkDeserialize (70,641,931 samples, 0.01%)</title><rect x="702.6" y="341" width="0.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="705.57" y="351.5" ></text>
+</g>
+<g >
+<title>Klass::class_loader (527,241,844 samples, 0.08%)</title><rect x="421.5" y="293" width="1.0" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="424.52" y="303.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_out (134,614,445 samples, 0.02%)</title><rect x="1170.0" y="165" width="0.2" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="1172.99" y="175.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (182,497,450 samples, 0.03%)</title><rect x="394.0" y="277" width="0.3" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="396.99" y="287.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (70,363,139 samples, 0.01%)</title><rect x="978.9" y="245" width="0.2" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="981.94" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream$BlockDataOutputStream:::setBlockDataMode (8,894,358,017 samples, 1.36%)</title><rect x="527.9" y="341" width="16.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="530.87" y="351.5" ></text>
+</g>
+<g >
+<title>update_process_times (70,498,071 samples, 0.01%)</title><rect x="353.3" y="149" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="356.27" y="159.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (119,895,096 samples, 0.02%)</title><rect x="1021.9" y="245" width="0.2" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1024.90" y="255.5" ></text>
+</g>
+<g >
+<title>PSPromotionManager::process_array_chunk (313,739,517 samples, 0.05%)</title><rect x="1180.0" y="261" width="0.5" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="1182.95" y="271.5" ></text>
+</g>
+<g >
+<title>jbyte_arraycopy (106,632,092 samples, 0.02%)</title><rect x="563.7" y="325" width="0.2" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="566.66" y="335.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (70,393,686 samples, 0.01%)</title><rect x="691.8" y="245" width="0.1" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="694.75" y="255.5" ></text>
+</g>
+<g >
+<title>jni_GetStringLength (176,912,065 samples, 0.03%)</title><rect x="841.6" y="277" width="0.3" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="844.61" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::newInstance (826,636,092 samples, 0.13%)</title><rect x="784.7" y="293" width="1.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="787.74" y="303.5" ></text>
+</g>
+<g >
+<title>update_process_times (70,577,467 samples, 0.01%)</title><rect x="916.0" y="197" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="919.04" y="207.5" ></text>
+</g>
+<g >
+<title>start_thread (70,665,778 samples, 0.01%)</title><rect x="1164.4" y="341" width="0.2" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1167.44" y="351.5" ></text>
+</g>
+<g >
+<title>handle_pte_fault (135,455,649 samples, 0.02%)</title><rect x="1188.2" y="101" width="0.3" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="1191.22" y="111.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readObject0 (11,336,730,928 samples, 1.73%)</title><rect x="876.1" y="325" width="20.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="879.13" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readNull (292,109,048 samples, 0.04%)</title><rect x="290.4" y="341" width="0.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="293.42" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::checkResolve (280,804,181 samples, 0.04%)</title><rect x="813.2" y="325" width="0.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="816.18" y="335.5" ></text>
+</g>
+<g >
+<title>next_utf2unicode (1,667,718,870 samples, 0.25%)</title><rect x="409.2" y="293" width="3.0" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="412.16" y="303.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (106,070,116 samples, 0.02%)</title><rect x="916.0" y="277" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="918.98" y="287.5" ></text>
+</g>
+<g >
+<title>__x64_sys_futex (106,805,663 samples, 0.02%)</title><rect x="1151.8" y="277" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1154.83" y="287.5" ></text>
+</g>
+<g >
+<title>frame::is_interpreted_frame (70,646,951 samples, 0.01%)</title><rect x="854.1" y="261" width="0.1" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="857.11" y="271.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (111,059,824 samples, 0.02%)</title><rect x="1119.6" y="293" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1122.56" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$BlockDataInputStream:::read (2,588,150,871 samples, 0.39%)</title><rect x="10.2" y="341" width="4.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="13.19" y="351.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (70,638,852 samples, 0.01%)</title><rect x="643.0" y="277" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="646.00" y="287.5" ></text>
+</g>
+<g >
+<title>vframeStream::vframeStream (4,387,192,181 samples, 0.67%)</title><rect x="433.1" y="293" width="7.9" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="436.07" y="303.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (70,638,852 samples, 0.01%)</title><rect x="643.0" y="325" width="0.1" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="646.00" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::handleReset (631,992,102 samples, 0.10%)</title><rect x="279.5" y="341" width="1.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="282.49" y="351.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (106,070,116 samples, 0.02%)</title><rect x="916.0" y="261" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="918.98" y="271.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_or_null (2,829,740,338 samples, 0.43%)</title><rect x="360.9" y="245" width="5.1" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="363.91" y="255.5" ></text>
+</g>
+<g >
+<title>start_thread (684,557,559 samples, 0.10%)</title><rect x="1188.8" y="341" width="1.2" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="1191.77" y="351.5" ></text>
+</g>
+<g >
+<title>update_process_times (70,363,139 samples, 0.01%)</title><rect x="978.9" y="197" width="0.2" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="981.94" y="207.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (70,363,139 samples, 0.01%)</title><rect x="978.9" y="293" width="0.2" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="981.94" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readFields (209,295,789 samples, 0.03%)</title><rect x="873.6" y="325" width="0.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="876.65" y="335.5" ></text>
+</g>
+<g >
+<title>Klass::is_subclass_of (141,033,705 samples, 0.02%)</title><rect x="900.3" y="261" width="0.3" height="15.0" fill="rgb(208,208,62)" rx="2" ry="2" />
+<text  x="903.32" y="271.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (70,470,856 samples, 0.01%)</title><rect x="1157.5" y="325" width="0.1" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="1160.46" y="335.5" ></text>
+</g>
+<g >
+<title>java_start (168,390,293 samples, 0.03%)</title><rect x="1188.5" y="325" width="0.3" height="15.0" fill="rgb(224,86,86)" rx="2" ry="2" />
+<text  x="1191.46" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::checkDeserialize (457,219,801 samples, 0.07%)</title><rect x="1028.9" y="325" width="0.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1031.88" y="335.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (173,058,991 samples, 0.03%)</title><rect x="1154.6" y="325" width="0.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1157.61" y="335.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (70,470,856 samples, 0.01%)</title><rect x="1157.5" y="293" width="0.1" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1160.46" y="303.5" ></text>
+</g>
+<g >
+<title>jshort_arraycopy (107,015,068 samples, 0.02%)</title><rect x="643.1" y="325" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="646.13" y="335.5" ></text>
+</g>
+<g >
+<title>Symbol::decrement_refcount (247,061,475 samples, 0.04%)</title><rect x="366.4" y="293" width="0.4" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="369.39" y="303.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (71,868,468 samples, 0.01%)</title><rect x="510.4" y="261" width="0.2" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="513.44" y="271.5" ></text>
+</g>
+<g >
+<title>jshort_arraycopy (741,193,090 samples, 0.11%)</title><rect x="1162.4" y="341" width="1.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1165.41" y="351.5" ></text>
+</g>
+<g >
+<title>jni_GetStringLength (489,385,503 samples, 0.07%)</title><rect x="392.3" y="293" width="0.9" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="395.28" y="303.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (70,187,088 samples, 0.01%)</title><rect x="208.6" y="277" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="211.61" y="287.5" ></text>
+</g>
+<g >
+<title>ObjectSynchronizer::FastHashCode (71,247,678 samples, 0.01%)</title><rect x="978.7" y="293" width="0.2" height="15.0" fill="rgb(193,193,56)" rx="2" ry="2" />
+<text  x="981.75" y="303.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readObject0 (123,443,146,434 samples, 18.84%)</title><rect x="291.3" y="341" width="222.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="294.26" y="351.5" >Ljava/io/ObjectInputStream:::..</text>
+</g>
+<g >
+<title>do_syscall_64 (88,298,734 samples, 0.01%)</title><rect x="1170.5" y="309" width="0.2" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1173.49" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream$BlockDataOutputStream:::write (6,003,862,200 samples, 0.92%)</title><rect x="954.1" y="325" width="10.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="957.12" y="335.5" ></text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (139,727,361 samples, 0.02%)</title><rect x="846.2" y="277" width="0.2" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="849.19" y="287.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (105,750,873 samples, 0.02%)</title><rect x="393.8" y="277" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="396.80" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$PeekInputStream:::readFully (8,807,964,313 samples, 1.34%)</title><rect x="797.3" y="325" width="15.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="800.32" y="335.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (138,676,240 samples, 0.02%)</title><rect x="472.0" y="197" width="0.3" height="15.0" fill="rgb(233,99,99)" rx="2" ry="2" />
+<text  x="475.00" y="207.5" ></text>
+</g>
+<g >
+<title>nmethod::find_pc_desc_internal (1,094,792,124 samples, 0.17%)</title><rect x="847.7" y="277" width="1.9" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="850.67" y="287.5" ></text>
+</g>
+<g >
+<title>perf_event_mmap (297,719,506 samples, 0.05%)</title><rect x="1188.9" y="149" width="0.6" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="1191.92" y="159.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor7:::invoke (140,740,398 samples, 0.02%)</title><rect x="779.6" y="341" width="0.3" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="782.61" y="351.5" ></text>
+</g>
+<g >
+<title>Atomic::inc (330,940,072 samples, 0.05%)</title><rect x="349.0" y="261" width="0.6" height="15.0" fill="rgb(210,210,63)" rx="2" ry="2" />
+<text  x="351.97" y="271.5" ></text>
+</g>
+<g >
+<title>nmethod::is_nmethod (109,988,769 samples, 0.02%)</title><rect x="867.9" y="261" width="0.2" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="870.90" y="271.5" ></text>
+</g>
+<g >
+<title>__GI___futex_abstimed_wait_cancelable64 (3,114,036,873 samples, 0.48%)</title><rect x="1164.6" y="325" width="5.6" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="1167.63" y="335.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedMethodAccessor7:::invoke (393,785,225 samples, 0.06%)</title><rect x="1149.8" y="325" width="0.7" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="1152.78" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectStreamClass:::getReflector (1,386,377,442 samples, 0.21%)</title><rect x="1033.9" y="325" width="2.5" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1036.91" y="335.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor6:::newInstance (215,060,033 samples, 0.03%)</title><rect x="1150.8" y="325" width="0.4" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="1153.81" y="335.5" ></text>
+</g>
+<g >
+<title>Java_java_lang_Class_forName0 (45,859,954,651 samples, 7.00%)</title><rect x="330.0" y="309" width="82.5" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="332.97" y="319.5" >Java_java..</text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$BlockDataInputStream:::read (637,072,851 samples, 0.10%)</title><rect x="786.4" y="325" width="1.2" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="789.44" y="335.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (70,470,856 samples, 0.01%)</title><rect x="1157.5" y="261" width="0.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="1160.46" y="271.5" ></text>
+</g>
+<g >
+<title>VerifyFixClassname (879,193,141 samples, 0.13%)</title><rect x="835.6" y="277" width="1.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="838.63" y="287.5" ></text>
+</g>
+<g >
+<title>__x64_sys_futex (3,113,817,875 samples, 0.48%)</title><rect x="1164.6" y="277" width="5.6" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1167.63" y="287.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (255,493,635 samples, 0.04%)</title><rect x="353.4" y="277" width="0.5" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="356.40" y="287.5" ></text>
+</g>
+<g >
+<title>futex_wait_queue (106,805,663 samples, 0.02%)</title><rect x="1151.8" y="229" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1154.83" y="239.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream:::writeOrdinaryObject (1,579,753,283 samples, 0.24%)</title><rect x="979.1" y="325" width="2.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="982.07" y="335.5" ></text>
+</g>
+<g >
+<title>CompressedReadStream::read_int_mb (141,508,238 samples, 0.02%)</title><rect x="845.9" y="277" width="0.2" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="848.87" y="287.5" ></text>
+</g>
+<g >
+<title>JNIHandles::make_local (70,521,575 samples, 0.01%)</title><rect x="826.9" y="261" width="0.2" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="829.93" y="271.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (9,651,044,207 samples, 1.47%)</title><rect x="245.9" y="325" width="17.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="248.87" y="335.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific@@GLIBC_2.34 (70,613,684 samples, 0.01%)</title><rect x="830.6" y="181" width="0.2" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="833.63" y="191.5" ></text>
+</g>
+<g >
+<title>Symbol::equals (141,912,989 samples, 0.02%)</title><rect x="514.7" y="277" width="0.2" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="517.68" y="287.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (173,995,714 samples, 0.03%)</title><rect x="471.9" y="245" width="0.4" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="474.94" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream$BlockDataInputStream:::readUTFSpan (101,395,622,221 samples, 15.47%)</title><rect x="15.0" y="341" width="182.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="17.98" y="351.5" >Ljava/io/ObjectInputStr..</text>
+</g>
+<g >
+<title>JNIHandles::make_local (55,592,064 samples, 0.01%)</title><rect x="846.4" y="277" width="0.1" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="849.44" y="287.5" ></text>
+</g>
+<g >
+<title>ClassLoaderDataGraph::oops_do (107,218,035 samples, 0.02%)</title><rect x="1178.5" y="277" width="0.2" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text  x="1181.55" y="287.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (601,534,731 samples, 0.09%)</title><rect x="1188.9" y="229" width="1.1" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="1191.92" y="239.5" ></text>
+</g>
+<g >
+<title>__schedule (106,805,663 samples, 0.02%)</title><rect x="1151.8" y="197" width="0.2" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="1154.83" y="207.5" ></text>
+</g>
+<g >
+<title>jbyte_disjoint_arraycopy (2,830,298,909 samples, 0.43%)</title><rect x="949.0" y="309" width="5.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="952.02" y="319.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (69,797,638 samples, 0.01%)</title><rect x="1119.8" y="293" width="0.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1122.76" y="303.5" ></text>
+</g>
+<g >
+<title>frame::is_interpreted_frame (141,463,827 samples, 0.02%)</title><rect x="440.2" y="277" width="0.2" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="443.19" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream$BlockDataOutputStream:::setBlockDataMode (10,882,036,081 samples, 1.66%)</title><rect x="934.5" y="325" width="19.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="937.52" y="335.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (106,070,116 samples, 0.02%)</title><rect x="916.0" y="309" width="0.2" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="918.98" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectOutputStream$BlockDataOutputStream:::write (13,125,066,539 samples, 2.00%)</title><rect x="543.9" y="341" width="23.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="546.88" y="351.5" >L..</text>
+</g>
+<g >
+<title>CodeHeap::find_start (351,813,835 samples, 0.05%)</title><rect x="865.6" y="229" width="0.6" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="868.61" y="239.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (105,832,842 samples, 0.02%)</title><rect x="512.0" y="309" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="514.96" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/String:::intern (211,520,030 samples, 0.03%)</title><rect x="1141.7" y="325" width="0.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1144.65" y="335.5" ></text>
+</g>
+<g >
+<title>HandleMark::pop_and_restore (141,162,569 samples, 0.02%)</title><rect x="334.1" y="277" width="0.3" height="15.0" fill="rgb(213,213,64)" rx="2" ry="2" />
+<text  x="337.15" y="287.5" ></text>
+</g>
+<g >
+<title>do_futex (88,105,601 samples, 0.01%)</title><rect x="1170.5" y="277" width="0.2" height="15.0" fill="rgb(245,115,115)" rx="2" ry="2" />
+<text  x="1173.49" y="287.5" ></text>
+</g>
+<g >
+<title>Lsun/reflect/GeneratedSerializationConstructorAccessor18:::newInstance (76,956,488 samples, 0.01%)</title><rect x="780.2" y="341" width="0.2" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="783.24" y="351.5" ></text>
+</g>
+<g >
+<title>update_process_times (70,638,852 samples, 0.01%)</title><rect x="643.0" y="213" width="0.1" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="646.00" y="223.5" ></text>
+</g>
+<g >
+<title>next_utf2unicode (387,795,600 samples, 0.06%)</title><rect x="844.1" y="277" width="0.7" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="847.09" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readHandle (3,128,346,573 samples, 0.48%)</title><rect x="284.8" y="341" width="5.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="287.78" y="351.5" ></text>
+</g>
+<g >
+<title>__memmove_sse2_unaligned_erms (276,971,794 samples, 0.04%)</title><rect x="388.0" y="293" width="0.5" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="390.96" y="303.5" ></text>
+</g>
+<g >
+<title>sync_regs (123,091,755 samples, 0.02%)</title><rect x="1180.7" y="245" width="0.3" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="1183.75" y="255.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/System:::identityHashCode (357,683,663 samples, 0.05%)</title><rect x="978.3" y="309" width="0.6" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="981.30" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readObject0 (538,874,572 samples, 0.08%)</title><rect x="781.9" y="293" width="0.9" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="784.86" y="303.5" ></text>
+</g>
+<g >
+<title>WatcherThread::run (168,390,293 samples, 0.03%)</title><rect x="1188.5" y="309" width="0.3" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text  x="1191.46" y="319.5" ></text>
+</g>
+<g >
+<title>next_utf2unicode (353,507,408 samples, 0.05%)</title><rect x="836.6" y="261" width="0.6" height="15.0" fill="rgb(252,126,126)" rx="2" ry="2" />
+<text  x="839.58" y="271.5" ></text>
+</g>
+<g >
+<title>frame::sender (176,232,431 samples, 0.03%)</title><rect x="510.6" y="277" width="0.3" height="15.0" fill="rgb(220,220,66)" rx="2" ry="2" />
+<text  x="513.57" y="287.5" ></text>
+</g>
+<g >
+<title>ScavengeRootsTask::do_it (388,474,805 samples, 0.06%)</title><rect x="1178.5" y="293" width="0.7" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="1181.55" y="303.5" ></text>
+</g>
+<g >
+<title>nmethod::get_deopt_original_pc (140,889,223 samples, 0.02%)</title><rect x="867.6" y="261" width="0.3" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="870.65" y="271.5" ></text>
+</g>
+<g >
+<title>ResourceMark::reset_to_mark (177,335,290 samples, 0.03%)</title><rect x="398.2" y="277" width="0.3" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="401.22" y="287.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::validateDescriptor (561,612,981 samples, 0.09%)</title><rect x="916.5" y="325" width="1.1" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="919.55" y="335.5" ></text>
+</g>
+<g >
+<title>nmethod::is_zombie (70,506,239 samples, 0.01%)</title><rect x="854.4" y="261" width="0.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="857.38" y="271.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (105,959,847 samples, 0.02%)</title><rect x="398.5" y="277" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="401.54" y="287.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (138,676,240 samples, 0.02%)</title><rect x="472.0" y="213" width="0.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="475.00" y="223.5" ></text>
+</g>
+<g >
+<title>__x64_sys_mprotect (601,196,140 samples, 0.09%)</title><rect x="1188.9" y="197" width="1.1" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="1191.92" y="207.5" ></text>
+</g>
+<g >
+<title>SystemDictionary::resolve_instance_class_or_null (211,919,517 samples, 0.03%)</title><rect x="833.2" y="229" width="0.3" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="836.16" y="239.5" ></text>
+</g>
+<g >
+<title>VerifyFixClassname@plt (109,220,870 samples, 0.02%)</title><rect x="412.7" y="309" width="0.2" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="415.74" y="319.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (2,062,645,373 samples, 0.31%)</title><rect x="692.2" y="325" width="3.7" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="695.20" y="335.5" ></text>
+</g>
+<g >
+<title>Lspec/benchmarks/serial/Main:::serialize (463,686,560 samples, 0.07%)</title><rect x="773.6" y="341" width="0.8" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="776.60" y="351.5" ></text>
+</g>
+<g >
+<title>java_lang_ClassLoader::loader_data (72,093,580 samples, 0.01%)</title><rect x="366.0" y="245" width="0.1" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="369.01" y="255.5" ></text>
+</g>
+<g >
+<title>jshort_disjoint_arraycopy (174,063,432 samples, 0.03%)</title><rect x="728.6" y="325" width="0.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="731.57" y="335.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::readObject (177,796,312 samples, 0.03%)</title><rect x="290.9" y="341" width="0.4" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="293.94" y="351.5" ></text>
+</g>
+<g >
+<title>jni_GetStringUTFLength (140,859,144 samples, 0.02%)</title><rect x="412.9" y="309" width="0.3" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="415.93" y="319.5" ></text>
+</g>
+<g >
+<title>Ljava/io/ObjectInputStream:::skipCustomData (175,221,742 samples, 0.03%)</title><rect x="524.1" y="341" width="0.3" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="527.06" y="351.5" ></text>
+</g>
+<g >
+<title>Ljava/lang/Class:::cast (530,817,849 samples, 0.08%)</title><rect x="1128.7" y="325" width="1.0" height="15.0" fill="rgb(87,234,87)" rx="2" ry="2" />
+<text  x="1131.72" y="335.5" ></text>
+</g>
+<g >
+<title>ThreadLocalStorage::is_initialized (212,648,034 samples, 0.03%)</title><rect x="1116.5" y="229" width="0.4" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="1119.52" y="239.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_and_fence (105,805,025 samples, 0.02%)</title><rect x="366.9" y="293" width="0.2" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="369.90" y="303.5" ></text>
+</g>
+<g >
+<title>ThreadStateTransition::transition_from_native (70,622,846 samples, 0.01%)</title><rect x="834.2" y="277" width="0.1" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="837.17" y="287.5" ></text>
+</g>
+</g>
+</svg>
